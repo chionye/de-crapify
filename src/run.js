@@ -4,14 +4,17 @@ import { aiCleanupFile } from './ai/cleanup.js';
 import { selectAiProvider } from './ai/providers.js';
 import { createProjectContext, describeContext } from './context/index.js';
 import { contentSkipReason, discoverFiles, SKIP_REASONS } from './discover.js';
-import { EXIT } from './errors.js';
+import { EXIT, SetupError } from './errors.js';
+import { assertSafeToWrite, gitState } from './git.js';
 import { ineffectiveOptionWarnings } from './options.js';
 import { parseCode } from './parse.js';
 import { runDeterministicRules } from './rules/index.js';
 import { formatDiff, formatReasons } from './output/diff.js';
 import { formatReports } from './output/reports.js';
 import { createStats, formatSummary, recordAiRejection, reportCounts } from './output/summary.js';
+import { outputTail, runTestCommand } from './test-cmd.js';
 import { loadProjectTypeScript, typecheckChanges } from './typecheck.js';
+import { writeChanges, writeFileAtomic } from './write.js';
 
 /**
  * @typedef {object} RunIO
@@ -38,6 +41,8 @@ import { loadProjectTypeScript, typecheckChanges } from './typecheck.js';
 /**
  * @typedef {object} RunDeps  Injectable for tests.
  * @property {(fromDir: string) => any} [loadTypeScript]
+ * @property {(fromDir: string) => string | null} [resolveTsc]
+ * @property {(args: string[], cwd: string) => Promise<string>} [runGit]
  * @property {typeof globalThis.fetch} [fetch]   Used for Ollama and the model download.
  * @property {import('./ai/providers.js').ProviderDeps} [ai]
  */
@@ -58,9 +63,6 @@ export async function runClean(options, io, deps = {}) {
   };
 
   for (const warning of ineffectiveOptionWarnings(options)) io.err(chalk.yellow(warning));
-  if (options.write) {
-    io.err(chalk.yellow('--write is not implemented yet in this build; nothing will be written.'));
-  }
 
   const stats = createStats();
 
@@ -68,6 +70,21 @@ export async function runClean(options, io, deps = {}) {
   stats.skipped.push(...discovery.skipped);
   verbose(`Found ${discovery.files.length} candidate file(s) under ${displayPath(discovery.root, io.cwd)}`);
   if (discovery.gitRoot) verbose(`Git root: ${discovery.gitRoot}`);
+
+  // Write mode: refuse early if the changes couldn't be undone, and check the tests pass before we
+  // change anything (otherwise every file would look like it broke them).
+  if (options.write) {
+    assertSafeToWrite(await gitState(discovery.root, discovery.gitRoot, deps.runGit), { force: options.force, cwd: io.cwd });
+    if (options.testCmd) {
+      verbose(`Running the test command before any change: ${options.testCmd}`);
+      const baseline = await runTestCommand(options.testCmd, { cwd: io.cwd, onOutput: options.verbose ? (t) => io.err(chalk.dim(t.trimEnd())) : undefined });
+      if (!baseline.ok) {
+        throw new SetupError(`--test-cmd fails before de-crapify changes anything (exit code ${baseline.code}), so it can't tell whether a change breaks your tests.`, {
+          hint: `Fix the tests first, or run without --test-cmd.${baseline.output ? `\nLast output: ${outputTail(baseline.output)}` : ''}`,
+        });
+      }
+    }
+  }
 
   const ai = await selectAiProvider({ options, io, verbose, deps: { fetch: deps.fetch, ...deps.ai } });
   try {
@@ -116,17 +133,31 @@ async function cleanFiles({ options, io, deps, stats, discovery, verbose, client
     stats.aiStatus = `${aiStatus} (${aiTotals.chunks} chunk(s) sent${failed})`;
   }
 
-  typecheck(results, { options, io, stats, verbose, loadTypeScript: deps.loadTypeScript });
+  typecheck(results, { options, io, stats, verbose, loadTypeScript: deps.loadTypeScript, resolveTsc: deps.resolveTsc });
+
+  if (options.write) await writeAndVerify(results, { options, io, stats, verbose });
 
   for (const result of results) {
     if (result.after === result.before) continue;
     stats.filesChanged++;
     stats.deterministicFixes += result.stage1Reasons.length;
     stats.aiAccepted += result.aiReasons.length;
-    io.out(formatDiff(displayPath(result.file, io.cwd), result.before, result.after, { chalk }));
+    const shown = displayPath(result.file, io.cwd);
+    if (options.write) {
+      const counts = [`${result.stage1Reasons.length} deterministic`, result.aiReasons.length ? `${result.aiReasons.length} AI` : ''].filter(Boolean);
+      const total = result.stage1Reasons.length + result.aiReasons.length;
+      io.out(`${chalk.green('✔')} wrote ${shown} (${total} fix${total === 1 ? '' : 'es'}: ${counts.join(', ')})`);
+      if (options.verbose) {
+        io.out(formatDiff(shown, result.before, result.after, { chalk }));
+        io.out(formatReasons(currentReasons(result), { chalk }));
+      }
+      continue;
+    }
+    io.out(formatDiff(shown, result.before, result.after, { chalk }));
     io.out(formatReasons(currentReasons(result), { chalk }));
     io.out('');
   }
+  if (options.write && stats.filesChanged > 0) io.out('');
 
   const reports = formatReports(stats.reports, { chalk, cwd: io.cwd });
   if (reports) {
@@ -227,15 +258,16 @@ async function processFile(file, { stats, verbose, ctx, files, options, client, 
  * @param {import('./output/summary.js').Stats} env.stats
  * @param {(msg: string) => void} env.verbose
  * @param {(fromDir: string) => any} [env.loadTypeScript]
+ * @param {(fromDir: string) => string | null} [env.resolveTsc]
  */
-function typecheck(results, { options, io, stats, verbose, loadTypeScript = loadProjectTypeScript }) {
+function typecheck(results, { options, io, stats, verbose, loadTypeScript = loadProjectTypeScript, resolveTsc }) {
   if (options.typecheck === false) {
     stats.typecheckStatus = 'off (--no-typecheck)';
     return;
   }
   let outcome;
   try {
-    outcome = typecheckChanges({ files: results, loadTypeScript, cwd: io.cwd });
+    outcome = typecheckChanges({ files: results, loadTypeScript, resolveTsc, cwd: io.cwd, mode: options.write ? 'write' : 'dry-run' });
   } catch (error) {
     stats.typecheckStatus = `failed (${/** @type {Error} */ (error).message})`;
     io.err(io.chalk.yellow(`Typecheck failed to run: ${/** @type {Error} */ (error).message}`));
@@ -251,6 +283,71 @@ function typecheck(results, { options, io, stats, verbose, loadTypeScript = load
     const what = revert.revertedTo === 'stage1' ? 'dropped the AI changes' : 'left the file unchanged';
     stats.reverted.push({ file: result.file, reason: `new type errors, ${what} (${revert.errors[0] ?? 'see tsc'})` });
     verbose(`typecheck: ${result.file}: ${revert.errors.join('; ')}`);
+  }
+}
+
+/**
+ * Write mode: write every changed file, then (with --test-cmd) run the tests once. If they fail,
+ * put everything back and re-apply the files one at a time, testing after each; a file that breaks
+ * the tests first loses its AI changes, then all of them. The files left on disk at the end are
+ * always a state the tests passed on. Ctrl-C during this puts every file back.
+ *
+ * @param {FileResult[]} results
+ * @param {object} env
+ * @param {import('./options.js').Options} env.options
+ * @param {RunIO} env.io
+ * @param {import('./output/summary.js').Stats} env.stats
+ * @param {(msg: string) => void} env.verbose
+ */
+async function writeAndVerify(results, { options, io, stats, verbose }) {
+  const changed = results.filter((r) => r.after !== r.before);
+  const { written, skipped } = await writeChanges(changed);
+  for (const s of skipped) {
+    const result = results.find((r) => r.file === s.file);
+    if (result) result.after = result.before;
+    stats.reverted.push(s);
+  }
+  if (!options.testCmd || written.length === 0) return;
+
+  const writtenResults = written.map((w) => /** @type {FileResult} */ (results.find((r) => r.file === w.file)));
+  const restoreAll = async () => {
+    for (const r of writtenResults) await writeFileAtomic(r.file, r.before);
+  };
+  const onInterrupt = () => {
+    io.err(io.chalk.yellow('\nInterrupted: putting every file back the way it was.'));
+    restoreAll().finally(() => process.exit(130));
+  };
+  process.once('SIGINT', onInterrupt);
+  const test = async () => {
+    verbose(`Running the test command: ${options.testCmd}`);
+    return runTestCommand(/** @type {string} */ (options.testCmd), { cwd: io.cwd, onOutput: options.verbose ? (t) => io.err(io.chalk.dim(t.trimEnd())) : undefined });
+  };
+
+  try {
+    if ((await test()).ok) return;
+    io.err(io.chalk.yellow('The tests fail with the changes applied; checking the files one at a time…'));
+    await restoreAll();
+    for (const r of writtenResults) {
+      await writeFileAtomic(r.file, r.after);
+      let run = await test();
+      if (run.ok) continue;
+      if (r.aiReasons.length > 0 && r.stage1 !== r.before && r.stage1 !== r.after) {
+        await writeFileAtomic(r.file, r.stage1);
+        const firstFailure = run;
+        run = await test();
+        if (run.ok) {
+          r.after = r.stage1;
+          r.aiReasons = [];
+          stats.reverted.push({ file: r.file, reason: `tests failed with the AI changes, kept the deterministic fixes (${outputTail(firstFailure.output) || `exit code ${firstFailure.code}`})` });
+          continue;
+        }
+      }
+      await writeFileAtomic(r.file, r.before);
+      r.after = r.before;
+      stats.reverted.push({ file: r.file, reason: `tests failed with this file's changes, left it unchanged (${outputTail(run.output) || `exit code ${run.code}`})` });
+    }
+  } finally {
+    process.removeListener('SIGINT', onInterrupt);
   }
 }
 

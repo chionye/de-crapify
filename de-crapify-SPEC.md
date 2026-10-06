@@ -161,7 +161,7 @@ Rejected suggestions are dropped silently in normal mode and logged with the rea
 - **Finding the culprit:** if the changes together add errors, check each changed file on its own; files that add errors alone are changed back (if none does alone, they interact and all are). A changed-back file first loses only its AI changes; if it still adds errors, all of its changes are dropped. Repeat until the remaining changes are clean.
 - Never install TypeScript on the user's behalf. Note in the README that typecheck runs the scanned project's own TypeScript package/binary, i.e. code from that project.
 
-After all chunks: if `--write` and `--test-cmd` are set, write the file, run the test command, and if it fails, restore the original file and report it. The test command is run once before any changes as a baseline; if the baseline fails, abort (exit 2) rather than reverting every file.
+With `--write` and `--test-cmd`: run the test command once before any changes as a baseline (if it fails, abort with exit 2 rather than reverting every file). After writing, run it once; if it fails, put every file back and re-apply them one at a time, testing after each. A file that breaks the tests first loses its AI changes, then all of them, and is reported. Ctrl-C during this puts every file back.
 
 ## AI providers
 
@@ -183,7 +183,7 @@ After all chunks: if `--write` and `--test-cmd` are set, write the file, run the
 
 - **Dry run (default):** for each changed file, print a Git-style colored diff: file header, hunk headers in cyan, removed lines in red with `-`, added lines in green with `+`, a few lines of unchanged context in dim gray. Under each file, list the reasons (e.g. "removed unused import `useMemo`", "AI: flattened nested conditionals in `handleSubmit`").
 - **Reports:** after diffs, list report-only findings grouped by type: likely hallucinated imports, imports that could not be verified, console calls that weren't safe to remove, and god files with their suggested split. Each with file and line.
-- **Write mode:** before writing anything, if the path is inside a git repo with uncommitted changes, or not inside a git repo at all, and `--force` isn't set, refuse and explain why (so the user can always undo with git). Then apply changes and print a short per-file summary.
+- **Write mode:** before any other work, if the path is not inside a git repo, or source files under it have uncommitted changes (modified, staged or untracked), and `--force` isn't set, refuse and explain why (so the user can always undo with git). Then apply changes atomically (never overwriting a file that changed on disk during the run) and print a short per-file summary; `--verbose` adds the diff.
 - **Always end with a summary:** files scanned, files changed, deterministic fixes, AI fixes accepted, AI suggestions rejected (with counts per rejection reason), report-only findings by type, files skipped and why (unparseable, too large, minified, ignored), and whether the typecheck ran.
 - Exit codes: 0 success, 1 cleanups found in `--check` mode, 2 setup error (Ollama/model/bad path).
 

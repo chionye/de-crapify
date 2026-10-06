@@ -40,7 +40,8 @@ export function lineAwareRange(source, start, end) {
     const prevBlank = lineStart > 0 && /^[ \t]*\r?$/.test(source.slice(prevLineStart, lineStart - 1));
     const nextLineEnd = source.indexOf('\n', removeEnd);
     const nextBlank = removeEnd < source.length && nextLineEnd !== -1 && /^[ \t]*\r?$/.test(source.slice(removeEnd, nextLineEnd));
-    if (prevBlank && nextBlank) removeEnd = nextLineEnd + 1;
+    // ...and don't leave a file that starts with a blank line.
+    if ((prevBlank || lineStart === 0) && nextBlank) removeEnd = nextLineEnd + 1;
     return { start: lineStart, end: removeEnd };
   }
   if (aloneAfter) {

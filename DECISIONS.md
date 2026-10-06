@@ -133,6 +133,19 @@ The guiding rule throughout: **a missed cleanup is fine; a broken file or a fals
 | When a reply echoes imports or neighbouring declarations, only the requested declaration is kept | Seen with the real 1.5B model: it repeated the prompt's imports (and silently changed an interface). Previously that was rejected as unparseable; now the extras are simply never applied, and the declaration is still fully validated. The prompt also asks the model not to do this. |
 | `--model` and `--ollama-url` no longer have commander defaults (defaults are applied later) | So we can tell whether the user actually asked for Ollama. |
 
+## Write mode (Phase 8)
+
+| Decision | Why |
+|---|---|
+| The git check is scoped to the target path and to source files de-crapify could change | Unrelated work elsewhere in the repo (or an untracked `notes.md`) shouldn't block a run; every file de-crapify might touch can still be undone with git. |
+| The git check and the `--test-cmd` baseline run before any AI work | Don't make someone wait for a model only to be refused at the end. |
+| Tests run once after writing; only if they fail are files re-applied one at a time | The common case costs one test run instead of one per file. The files left on disk are always a state the tests passed on. |
+| A file that breaks the tests first loses only its AI changes, then all of them | Same two-step approach as the typecheck; keeps safe deterministic fixes. |
+| Writes are atomic (temp file + rename, permissions kept), and a file that changed on disk since it was read is not overwritten | No half-written files after a crash; never clobbers someone's edits. |
+| Ctrl-C while the tests are being checked puts every file back | The run never ends in a half-verified state. A Ctrl-C during the TS 7 binary check could leave a candidate on disk, but `--write` requires a clean git tree, so `git restore` recovers it. |
+| Write mode prints one line per file (`✔ wrote a.js (5 fixes: 3 deterministic, 2 AI)`); `--verbose` adds the diff | As the spec says; the diff is in `git diff` anyway. |
+| Removing code at the very top of a file also removes the blank line after it | Otherwise removing a file's only import leaves it starting with a blank line. |
+
 ## Open items
 
 - **Size limits** for AI rewrites: re-tune after trying a real model.
