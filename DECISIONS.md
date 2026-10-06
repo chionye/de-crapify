@@ -96,6 +96,28 @@ The guiding rule throughout: **a missed cleanup is fine; a broken file or a fals
 | Without `--verbose`, one progress line per chunk goes to stderr | Local models take seconds to minutes per chunk; a silent run looks hung. stdout stays clean for the diff. |
 | AI reasons describe what changed, from the AST (comments removed, nesting flattened, variables removed) | Matches the spec's example ("AI: flattened nested conditionals in `handleSubmit`") without trusting the model's own description. |
 
+## Zero-setup direction (after Phase 5)
+
+| Decision | Why |
+|---|---|
+| The tool must be useful right after `npm install`, with no other setup | Requiring the Ollama app and a 4.7 GB model download before anything works defeats the purpose of an npm tool. |
+| More cleanups move into deterministic rules (Phase 6); AI becomes a built-in local model, downloaded once with consent (Phase 7); Ollama is used if already present; a bring-your-own-key cloud provider is recorded for later | Deterministic rules are instant, free and safe by construction. A built-in model removes the separate app. Code still never leaves the machine by default. |
+| The "no network calls" rule is replaced by "the only network use is the one-time model download" | Requested; the download is the one unavoidable network step for local AI. |
+
+## More deterministic rules (Phase 6)
+
+| Decision | Why |
+|---|---|
+| Every structural transform is one atomic edit that carries its own reason | If an overlap means an edit is dropped, it's dropped whole: a half-applied rewrite (variable removed, still returned) can't happen, and no reason is reported for an edit that wasn't applied. |
+| Structural rules repeat in passes (up to 5) until nothing changes; reports come from the first pass only | One transform exposes another (removing an `else` makes nesting collapsible). Report line numbers must match the file on disk. |
+| Narrating comments are matched against the statement's "head": a declaration's name, an `if`'s condition, a loop's header, otherwise the whole statement | Matching against a whole function body would let almost any comment "match" and remove real explanations. |
+| Comments are only removed when *every* meaningful word appears in the code; explanation words, `TODO`-style flags, `?`, URLs, `@` tags, directives, comment blocks, and comments over 10 words are always kept | A missed narrating comment is harmless (the AI may catch it); a removed explanation loses information. |
+| A comment about logging directly above a removed console call goes with it, and the two removals are joined so no double blank line is left | `// Log the current state` with nothing below it is noise. |
+| Removing an `else` after `return` takes priority over collapsing `else { if }` into `else if` | It produces the flatter result in fewer passes. |
+| Lifting an `else` body also requires that its `let`/`const`/`class` names aren't used anywhere else in the enclosing block (not just "not already declared") | Otherwise a lifted `const status` would shadow a later use of a global `status`, silently changing behavior. |
+| Re-indenting rules skip code with multi-line strings or template literals | Re-indenting would change the string's contents. |
+| `const x: T = expr; return x;` is left alone | Folding would drop the annotation, which can change what the type checker infers. |
+
 ## Open items
 
 - **Size limits** for AI rewrites: re-tune after trying a real model.

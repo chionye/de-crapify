@@ -47,7 +47,9 @@ describe('fixture e2e: react-classic', () => {
     assert.match(diff, /^-import \{ formatPhone \} from '\.\/formatters';$/m);
     assert.match(diff, /^-  console\.log\('SignupForm render', email, password\);$/m);
     assert.match(diff, /^-\s+console\.debug\('submitted'\);$/m);
-    assert.doesNotMatch(diff, /^-.*console\.error/m, 'console.error is kept');
+    const errorLines = (sign) => diff.split('\n').filter((l) => l.startsWith(sign) && l.includes("console.error('Signup failed', error)")).length;
+    assert.equal(errorLines('-'), errorLines('+'), 'console.error is kept (it may be re-indented, never removed)');
+    assert.match(diff, /^\+ {4}if \(Object\.keys\(result\)\.length === 0 && !submitting && email && password\) \{$/m, 'nested ifs merged');
     assert.match(out, /removed unused import `useEffect` from 'react'/);
     assert.equal(section('Likely hallucinated imports'), '');
   });
@@ -114,7 +116,7 @@ describe('fixture e2e: ts-utils', () => {
     const { diffOf, root } = await runFixture('ts-utils');
     const diff = diffOf('src/format.ts') ?? '';
     const removed = diff.split('\n').filter((l) => /^-[^-]/.test(l));
-    assert.deepEqual(removed, ["-import { readFileSync } from 'node:fs';", "-    console.log('displayName', user.id);"]);
+    assert.deepEqual(removed, ["-import { readFileSync } from 'node:fs';", '-    // Log the call', "-    console.log('displayName', user.id);"]);
     const source = await fs.readFile(path.join(root, 'src/format.ts'), 'utf8');
     assert.match(source, /console\.log\('debugDump'/, 'kept block untouched on disk');
   });

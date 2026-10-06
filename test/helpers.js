@@ -103,13 +103,14 @@ export async function parseSnippet(source, filePath = 'snippet.tsx') {
 }
 
 /**
- * Apply removal edits to a source string (what the rules engine does with magic-string).
+ * Apply edits (removals, or replacements when `text` is set) to a source string, as the rules
+ * engine does with magic-string. Edits must not overlap.
  * @param {string} source
- * @param {{ start: number, end: number }[]} edits
+ * @param {{ start: number, end: number, text?: string }[]} edits
  */
 export function applyEdits(source, edits) {
   let out = source;
-  for (const edit of [...edits].sort((a, b) => b.start - a.start)) out = out.slice(0, edit.start) + out.slice(edit.end);
+  for (const edit of [...edits].sort((a, b) => b.start - a.start)) out = out.slice(0, edit.start) + (edit.text ?? '') + out.slice(edit.end);
   return out;
 }
 

@@ -1,10 +1,8 @@
-import { insideAny, lineAwareRange, preview, traverse } from './shared.js';
+import { insideAny, lineAwareRange, preview, STATEMENT_LIST_PARENTS, traverse } from './shared.js';
 
 /** Console methods treated as debug output. Anything else (error, warn, group, time...) is never touched. */
 export const DEBUG_CONSOLE_METHODS = ['log', 'debug', 'info', 'trace', 'dir', 'table'];
 
-/** Parents whose statement lists we can safely remove a statement from. */
-const STATEMENT_LIST_PARENTS = new Set(['BlockStatement', 'Program', 'SwitchCase', 'StaticBlock', 'TSModuleBlock']);
 
 /**
  * Rule 2: remove standalone debug console calls; report the ones that aren't safe to remove.

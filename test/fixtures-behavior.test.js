@@ -45,6 +45,8 @@ async function cleanedFixturesCopy({ ai = false } = {}) {
   const root = path.join(tmp, 'test-fixtures');
   await fs.cp(FIXTURES_DIR, root, { recursive: true });
   let changed = 0;
+  /** @type {Record<string, string>} */
+  const contents = {};
   for (const rel of RUNNABLE) {
     const filePath = path.join(root, rel);
     const projectRoot = path.join(root, rel.split('/')[0]);
@@ -65,9 +67,10 @@ async function cleanedFixturesCopy({ ai = false } = {}) {
       ? (await aiCleanupFile({ source: output, filePath, displayPath: rel, ctx, client, numCtx: 8192 })).output
       : output;
     if (final !== source) changed++;
+    contents[rel] = final;
     await fs.writeFile(filePath, final);
   }
-  return { tmp, root, changed };
+  return { tmp, root, changed, contents };
 }
 
 beforeEach(() => {
@@ -187,8 +190,9 @@ describe('cleaned copy', () => {
 behaviorSuites('after deterministic cleanup', cleaned.root);
 
 describe('AI-cleaned copy', () => {
-  it('actually contains AI cleanups', () => {
-    assert.ok(aiCleaned.changed > cleaned.changed, `AI changed ${aiCleaned.changed} files vs ${cleaned.changed} without AI`);
+  it('actually contains AI cleanups on top of the deterministic ones', () => {
+    const differing = RUNNABLE.filter((rel) => aiCleaned.contents[rel] !== cleaned.contents[rel]);
+    assert.ok(differing.length > 0, 'the mock model changed nothing beyond the deterministic rules');
   });
 });
 

@@ -7,7 +7,9 @@ export const traverse = /** @type {typeof import('@babel/traverse').default} */ 
 
 /**
  * @typedef {{ start: number, end: number }} Range
- * @typedef {{ start: number, end: number }} Edit  A range of the original source to remove.
+ * @typedef {{ start: number, end: number, text?: string, reason?: string }} Edit
+ *   Replace `start..end` of the source with `text` (remove it when there's no text). Rules that can
+ *   produce overlapping edits attach their `reason` to the edit, so it only counts if applied.
  * @typedef {import('../output/summary.js').ReportType} ReportType
  * @typedef {{ type: ReportType, line: number, message: string }} RuleReport
  */
@@ -127,4 +129,89 @@ export function jsxReferenceKind(path) {
   if ((parent.type === 'JSXOpeningElement' || parent.type === 'JSXClosingElement') && parent.name === node) return 'tag';
   if (parent.type === 'JSXMemberExpression' && parent.object === node) return 'member';
   return null;
+}
+
+/** Statement-list parents: removing or adding statements in their lists is safe. */
+export const STATEMENT_LIST_PARENTS = new Set(['BlockStatement', 'Program', 'SwitchCase', 'StaticBlock', 'TSModuleBlock']);
+
+/**
+ * The indentation of the line containing `pos`, or null if there's code before `pos` on that line
+ * (the node doesn't start its own line).
+ * @param {string} source
+ * @param {number} pos
+ * @returns {string | null}
+ */
+export function ownLineIndent(source, pos) {
+  const lineStart = source.lastIndexOf('\n', pos - 1) + 1;
+  const before = source.slice(lineStart, pos);
+  return /^[ \t]*$/.test(before) ? before : null;
+}
+
+/**
+ * Re-indent a block of text: every line after the first (or every line, with `includeFirst`) that
+ * starts with `from` gets that prefix replaced by `to`. Returns null if a non-blank line doesn't
+ * start with `from`, i.e. the text isn't indented the way we expect; callers then skip the change.
+ * @param {string} text
+ * @param {string} from
+ * @param {string} to
+ * @param {{ includeFirst?: boolean }} [options]
+ */
+export function reindent(text, from, to, { includeFirst = false } = {}) {
+  const lines = text.split('\n');
+  for (let i = includeFirst ? 0 : 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') {
+      lines[i] = line.replace(/^[ \t]+/, '');
+      continue;
+    }
+    if (!line.startsWith(from)) return null;
+    lines[i] = to + line.slice(from.length);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Visit every AST node under `node` (no scope, no paths). Return false from `visit` to skip children.
+ * @param {any} node
+ * @param {(node: any) => boolean | void} visit
+ */
+export function walkNodes(node, visit) {
+  if (!node || typeof node.type !== 'string') return;
+  if (visit(node) === false) return;
+  for (const key of Object.keys(node)) {
+    if (key === 'loc' || key === 'leadingComments' || key === 'trailingComments' || key === 'innerComments' || key === 'extra') continue;
+    const value = node[key];
+    if (Array.isArray(value)) for (const child of value) walkNodes(child, visit);
+    else if (value && typeof value.type === 'string') walkNodes(value, visit);
+  }
+}
+
+/**
+ * Whether code contains a string or template literal spanning several lines. Re-indenting such
+ * code would change the string's contents, so re-indenting rules skip it.
+ * @param {any} node
+ */
+export function hasMultilineLiteral(node) {
+  let found = false;
+  walkNodes(node, (n) => {
+    if (found) return false;
+    if ((n.type === 'TemplateLiteral' || n.type === 'StringLiteral') && n.loc && n.loc.start.line !== n.loc.end.line) found = true;
+  });
+  return found;
+}
+
+/**
+ * Comments that lie inside `range` but outside all of `allowed` (e.g. the parts of an `if` chain
+ * that a rewrite would drop).
+ * @param {import('@babel/types').Comment[]} comments
+ * @param {Range} range
+ * @param {Range[]} allowed
+ */
+export function commentsOutside(comments, range, allowed) {
+  return comments.filter(
+    (c) =>
+      /** @type {number} */ (c.start) >= range.start &&
+      /** @type {number} */ (c.end) <= range.end &&
+      !allowed.some((a) => /** @type {number} */ (c.start) >= a.start && /** @type {number} */ (c.end) <= a.end),
+  );
 }

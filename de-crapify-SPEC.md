@@ -2,7 +2,7 @@
 
 You are building **de-crapify**, an open-source Node.js CLI that cleans up messy patterns AI coding assistants leave in JavaScript/TypeScript code (including React and React Native): unused imports, leftover debug logs, comments that just narrate the code, over-nested conditionals, duplicated or badly stitched logic, and "god files" that cram several components or modules into one file.
 
-It runs 100% locally. The AI part uses Ollama on the user's machine. No cloud AI SDKs, no telemetry, no network calls except to the local Ollama server.
+**It must work right after `npm install`, with no other setup.** The deterministic rules need nothing. The AI part runs a small model on the user's machine, built into the tool (downloaded once on first use), or uses Ollama if the user already has it. Code never leaves the machine: no cloud AI, no telemetry. The only network use is that one-time model download.
 
 ## The core principle (read this first)
 
@@ -20,7 +20,7 @@ It runs 100% locally. The AI part uses Ollama on the user's machine. No cloud AI
 
 - Node.js >= 20, plain JavaScript, ES modules (`"type": "module"`). Use JSDoc types where they help.
 - `package.json` exposes the binary: `"bin": { "de-crapify": "./src/index.js" }`, with `#!/usr/bin/env node` at the top of that file. Declare `"engines": { "node": ">=20" }`.
-- Dependencies: `commander`, `chalk`, `diff`, `ignore` (for .gitignore rules), `@babel/parser`, `@babel/traverse`, `magic-string` (to remove code ranges without reformatting the rest of the file).
+- Dependencies: `commander`, `chalk`, `diff`, `ignore` (for .gitignore rules), `@babel/parser`, `@babel/traverse`, `magic-string` (to remove code ranges without reformatting the rest of the file), and `node-llama-cpp` (Phase 7: runs the built-in model in-process; prebuilt for macOS, Windows and Linux).
 - Use `node:fs/promises` and `node:path` (no `fs-extra`). Use native `fetch` for Ollama.
 - Tests: the built-in `node:test` runner and `node:assert`. Tests must never need Ollama running; the Ollama client must accept an injectable `fetch` so tests can mock it.
 - Do **not** add TypeScript as a (runtime) dependency. For type-checking, use the project's own TypeScript (see Validation). `typescript` (7.x) and `typescript-6` (an alias of 6.x) are devDependencies used only by tests, to exercise both typecheck backends against real compilers.
@@ -53,7 +53,9 @@ Options:
 | `--write` | off | Apply changes to disk. **Without it, the tool only shows a diff (dry run is the default).** |
 | `--check` | off | CI mode: print a summary, exit with code 1 if any cleanups or any **likely hallucinated** imports were found, 0 otherwise ("could not verify" imports, unsafe console calls, and god files don't affect the exit code). Never writes. Combining with `--write` is an error (exit 2). |
 | `--force` | off | Allow `--write` on a git repo with uncommitted changes, or outside a git repo. |
-| `--no-ai` | AI on | Run only the deterministic rules; don't contact Ollama. |
+| `--no-ai` | AI on | Run only the deterministic rules; no model is loaded or contacted. |
+| `--ai-provider <name>` | `auto` | `auto`: Ollama if it's running with the model, else the built-in model. `builtin` or `ollama` force one (see AI providers). |
+| `--yes` | off | Allow the one-time built-in model download without asking (for scripts and CI). |
 | `--model <name>` | `qwen2.5-coder:7b` | Ollama model to use. |
 | `--ollama-url <url>` | `http://localhost:11434` | Ollama server address. |
 | `--num-ctx <n>` | `8192` | Context window to request from Ollama. |
@@ -113,6 +115,13 @@ These run first, are fast, and are safe by construction. Each rule produces a li
 
    For the suggestion, group top-level declarations by which ones reference each other, and propose one file per main component or group, e.g. "move `UserCard` and `formatDate` (used only by `UserCard`) to `UserCard.tsx`." This is plain dependency analysis, no AI needed. Don't move anything in v1.
 
+5. **Narrating comments.** Remove a single `//` comment line directly above a statement (no blank line between, not part of a multi-line comment block) when it only restates that statement: every meaningful word of the comment appears among the words of the statement's identifiers, keywords and string literals (camelCase split, lowercased, plurals and -ing/-ed folded), ignoring stopwords and a short list of generic words ("value", "variable", "function", "result", "create", "check"...). Never remove comments with `TODO`/`FIXME`/`HACK`/`NOTE`/`XXX`, `@` tags, directives, URLs, a `?`, explanation words ("because", "why", "since", "otherwise", "workaround", "so that"), or more than ~10 words. Also remove a comment directly above a debug console call that Rule 2 removes when the comment talks about logging ("log", "debug", "print", "console", "output"). A missed comment is fine (the AI may catch it); a removed explanation is not.
+6. **Needless nesting.** `if (a) { if (b) { … } }` where neither `if` has an `else` and the outer block contains only the inner `if` becomes `if (a && b) { … }` (operands that bind looser than `&&` get parentheses; chains collapse fully). `else { if (c) … }` where the `else` block contains only that `if` becomes `else if (c) …`. Skip anything with comments between the parts. The body is re-indented one level, unless it contains multi-line strings or templates, in which case the transform is skipped.
+7. **Unneeded `else` after `return`/`throw`.** `if (c) { …; return x; } else { … }` becomes `if (c) { …; return x; }` followed by the `else` body (re-indented), when the `if` sits in a statement list and the `else` body declares nothing (`let`/`const`/`class`/`function`) that would clash with a name already bound in the enclosing scope.
+8. **Redundant return variable.** `const x = expr; return x;` (adjacent statements, a single declarator, no type annotation, `x` used nowhere else, no comments in between) becomes `return expr;` (parenthesized when needed). Same for `let` that is never reassigned.
+
+Rules 5–8 are applied repeatedly (up to a few passes) until nothing changes, because one transform can expose another (removing an `else` can make nesting collapsible). Like all Stage 1 rules, they respect `de-crapify-keep`, and the result must parse or the file is left unchanged.
+
 ### Stage 2: AI cleanup (skipped with `--no-ai`)
 
 - Split the file (after Stage 1) into chunks: each top-level function, class, function-valued variable (arrow components, `memo(...)`/`forwardRef(...)` wrappers), or exported value is one chunk. Top-level code outside these is left alone in v1, and so are TypeScript interfaces, types and enums (the signature check doesn't cover their members, so a dropped field would go unnoticed).
@@ -154,9 +163,15 @@ Rejected suggestions are dropped silently in normal mode and logged with the rea
 
 After all chunks: if `--write` and `--test-cmd` are set, write the file, run the test command, and if it fails, restore the original file and report it. The test command is run once before any changes as a baseline; if the baseline fails, abort (exit 2) rather than reverting every file.
 
+## AI providers
+
+- **auto (default):** if Ollama answers at `--ollama-url` and has `--model`, use it. Otherwise use the built-in model. If the AI can't be used (the user declines the download, there's no space, or the machine can't run it), print one yellow line saying so and how to enable it, and **continue with the deterministic rules**; this never changes the exit code. In a non-interactive run (no TTY, e.g. CI or `--check`), never prompt: use the built-in model only if it's already downloaded or `--yes` is given.
+- **builtin:** an in-process model via `node-llama-cpp`. Default model: a small code model (Qwen2.5-Coder 1.5B Instruct, GGUF Q4_K_M, about 1 GB) that runs on ordinary laptops without a GPU, using Metal/CUDA/Vulkan when available. Downloaded once on first use, after asking (show the size; `--yes` skips the question), with a progress bar, into the user cache directory (`~/.cache/de-crapify/models`, or the platform equivalent); verified by size/checksum; resumed or re-downloaded if incomplete. Same chat interface, timeouts, `temperature: 0`, and `--num-ctx` as Ollama.
+- **ollama:** as described below. When chosen explicitly with `--ai-provider ollama`, a missing Ollama or model is a setup error (exit 2), as originally specified.
+
 ## Ollama client (`src/ollama.js` or similar)
 
-- Before processing any files (unless `--no-ai`), call `GET /api/tags` to check that Ollama is reachable and the chosen model is installed.
+- Before processing any files (unless `--no-ai`), call `GET /api/tags` to check that Ollama is reachable and the chosen model is installed. With `--ai-provider auto`, a failure here just means "use the built-in model"; the messages below apply when Ollama was chosen explicitly.
   - Not reachable: print with `chalk.yellow` that Ollama doesn't seem to be running, suggest `ollama serve`, mention `--no-ai` as an alternative, and exit with code 2.
   - Model missing: print the exact `ollama pull <model>` command, list the models that *are* installed, and exit with code 2. Do not silently fall back to another model.
 - Use `POST /api/chat` with `stream: false`, a system message plus a user message, and `options: { temperature: 0, num_ctx: <--num-ctx> }`.
@@ -198,9 +213,15 @@ Unit tests should cover: parser settings per extension, file discovery and ignor
 3. **Deterministic rules:** the four Stage 1 rules, `de-crapify-keep` handling, report output, `--no-ai` working end to end. Tests.
 4. **Validation module:** all Stage 3 per-chunk checks as pure functions, heavily tested with bad inputs. Then the typecheck step.
 5. **Ollama integration:** client, preflight check, chunking, system prompt, wiring AI → validation → diff. Tests with mocked fetch. Then I'll try it against a real local model.
-6. **Write mode and polish:** `--write`, git dirty check, `--test-cmd` with revert, `--check` exit codes, README with install, usage, a "how it stays safe" section, supported/unsupported code, and limitations.
+6. **More deterministic rules:** Stage 1 rules 5–8 (narrating comments, needless nesting, unneeded `else`, redundant return variable), edits that replace text (not only remove it), and repeated passes. Tests, including behavior tests on the fixtures.
+7. **Built-in model and provider selection:** `node-llama-cpp` provider with the one-time download (consent, progress, cache, verification), `--ai-provider`, `--yes`, automatic fallback, and non-interactive behavior. Tests without downloading a real model (the model loader is injectable), plus one opt-in test that uses the real model.
+8. **Write mode and polish:** `--write`, git dirty check, `--test-cmd` with revert, `--check` exit codes, README with install, usage, a "how it stays safe" section, supported/unsupported code, and limitations.
 
 Remember to stop after each phase and wait for me.
+
+## Later (do NOT build now): bring-your-own-key cloud provider
+
+An opt-in `--ai-provider` for a hosted model (e.g. Claude) using the user's own API key, for people who want stronger suggestions and accept sending code to that provider. Never the default; the same validation applies to every suggestion.
 
 ## Later (do NOT build now): `de-crapify split`
 
