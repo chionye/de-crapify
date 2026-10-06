@@ -88,3 +88,27 @@ export async function fakeInstall(dir, name, pkg = {}, files = {}) {
   await writeTree(pkgDir, { 'package.json': JSON.stringify({ name, version: '1.0.0', ...pkg }), ...files });
   return pkgDir;
 }
+
+/**
+ * Parse a snippet the way de-crapify would for `filePath` (extension picks the parser plugins).
+ * Throws if it doesn't parse, so a broken test input fails loudly.
+ * @param {string} source
+ * @param {string} [filePath]
+ */
+export async function parseSnippet(source, filePath = 'snippet.tsx') {
+  const { parseCode } = await import('../src/parse.js');
+  const result = parseCode(source, filePath);
+  if (!result.ok) throw result.error;
+  return result.ast;
+}
+
+/**
+ * Apply removal edits to a source string (what the rules engine does with magic-string).
+ * @param {string} source
+ * @param {{ start: number, end: number }[]} edits
+ */
+export function applyEdits(source, edits) {
+  let out = source;
+  for (const edit of [...edits].sort((a, b) => b.start - a.start)) out = out.slice(0, edit.start) + out.slice(edit.end);
+  return out;
+}

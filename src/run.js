@@ -5,7 +5,9 @@ import { contentSkipReason, discoverFiles, SKIP_REASONS } from './discover.js';
 import { EXIT } from './errors.js';
 import { ineffectiveOptionWarnings } from './options.js';
 import { parseCode } from './parse.js';
+import { runDeterministicRules } from './rules/index.js';
 import { formatDiff, formatReasons } from './output/diff.js';
+import { formatReports } from './output/reports.js';
 import { createStats, formatSummary, reportCounts } from './output/summary.js';
 
 /**
@@ -65,7 +67,7 @@ export async function runClean(options, io) {
       verbose(`Project context for ${displayPath(ctx.dir, io.cwd)}:`);
       for (const line of describeContext(ctx, io.cwd)) verbose(`  ${line}`);
     }
-    const result = await processFile(file, { stats, verbose, ctx });
+    const result = await processFile(file, { stats, verbose, ctx, files: context.files, options });
     if (result && result.after !== result.before) results.push(result);
   }
 
@@ -73,6 +75,12 @@ export async function runClean(options, io) {
     stats.filesChanged++;
     io.out(formatDiff(displayPath(result.file, io.cwd), result.before, result.after, { chalk }));
     io.out(formatReasons(result.reasons, { chalk }));
+    io.out('');
+  }
+
+  const reports = formatReports(stats.reports, { chalk, cwd: io.cwd });
+  if (reports) {
+    io.out(reports);
     io.out('');
   }
 
@@ -86,14 +94,18 @@ export async function runClean(options, io) {
 }
 
 /**
- * Read, filter and parse one file. Returns null when the file is skipped.
- * The cleanup stages plug in here in later phases.
+ * Read, filter, parse and clean one file. Returns null when the file is skipped.
  *
  * @param {string} file
- * @param {{ stats: import('./output/summary.js').Stats, verbose: (msg: string) => void, ctx: import('./context/index.js').DirContext }} deps
+ * @param {object} deps
+ * @param {import('./output/summary.js').Stats} deps.stats
+ * @param {(msg: string) => void} deps.verbose
+ * @param {import('./context/index.js').DirContext} deps.ctx
+ * @param {import('./context/files.js').FileCache} deps.files
+ * @param {import('./options.js').Options} deps.options
  * @returns {Promise<FileResult | null>}
  */
-async function processFile(file, { stats, verbose }) {
+async function processFile(file, { stats, verbose, ctx, files, options }) {
   const source = await fs.readFile(file, 'utf8');
   const skipReason = contentSkipReason(source);
   if (skipReason) {
@@ -111,7 +123,13 @@ async function processFile(file, { stats, verbose }) {
 
   stats.filesScanned++;
   verbose(`scanned ${file}`);
-  return { file, before: source, after: source, reasons: [] };
+
+  const stage1 = await runDeterministicRules({ source, ast: parsed.ast, filePath: file, ctx, files, options });
+  for (const note of stage1.notes) verbose(`  ${note}`);
+  stats.deterministicFixes += stage1.reasons.length;
+  stats.reports.push(...stage1.reports.map((r) => ({ ...r, file })));
+
+  return { file, before: source, after: stage1.output, reasons: stage1.reasons };
 }
 
 /** @param {string} file @param {string} cwd */

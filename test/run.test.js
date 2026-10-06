@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { normalizeOptions } from '../src/options.js';
 import { runClean } from '../src/run.js';
@@ -34,10 +36,16 @@ describe('runClean (phase 1 pipeline)', () => {
     assert.match(stdout(), /generated \(@generated\): gen\.ts/);
   });
 
-  it('never modifies files', async () => {
+  it('never modifies files on disk (dry run, and --write is not implemented yet)', async () => {
     const files = { 'a.js': "import x from 'y';\nconsole.log(1);\n" };
-    const { stdout } = await runOn(files, { write: true, force: true });
-    assert.match(stdout(), /Files changed\s+0/);
+    const dir = await makeTempTree(files);
+    dirs.push(dir);
+    for (const raw of [{}, { write: true, force: true }]) {
+      const capture = captureIO(dir);
+      await runClean(normalizeOptions('.', { ai: false, ...raw }), capture.io);
+      assert.match(capture.stdout(), /removed unused import `x`/);
+      assert.equal(await fs.readFile(path.join(dir, 'a.js'), 'utf8'), files['a.js']);
+    }
   });
 
   it('warns that --write is not implemented yet', async () => {
