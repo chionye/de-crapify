@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Chalk } from 'chalk';
 
 /** Chalk with colors off, for asserting on plain text. */
@@ -58,4 +59,32 @@ export function captureIO(cwd, chalk = plainChalk) {
     stdout: () => out.join('\n'),
     stderr: () => err.join('\n'),
   };
+}
+
+export const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'test-fixtures');
+
+/**
+ * Copy a fixture project into a fresh temp directory (so lookups that walk up the tree can't reach
+ * de-crapify's own package.json / node_modules). Returns the copy's path.
+ * @param {string} name
+ */
+export async function copyFixture(name) {
+  const dir = await makeTempTree();
+  const dest = path.join(dir, name);
+  await fs.cp(path.join(FIXTURES_DIR, name), dest, { recursive: true });
+  return dest;
+}
+
+/**
+ * Create a fake installed package at `<dir>/node_modules/<name>` with the given package.json fields
+ * and extra files.
+ * @param {string} dir
+ * @param {string} name
+ * @param {Record<string, any>} [pkg]
+ * @param {Record<string, string>} [files]
+ */
+export async function fakeInstall(dir, name, pkg = {}, files = {}) {
+  const pkgDir = path.join(dir, 'node_modules', name);
+  await writeTree(pkgDir, { 'package.json': JSON.stringify({ name, version: '1.0.0', ...pkg }), ...files });
+  return pkgDir;
 }

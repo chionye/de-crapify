@@ -1,0 +1,11 @@
+{
+  "name": "ts-utils",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

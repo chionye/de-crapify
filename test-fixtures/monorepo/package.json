@@ -1,0 +1,13 @@
+{
+  "name": "acme",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "dependencies": {
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  // Classic JSX runtime: every file using JSX needs React in scope.
+  "compilerOptions": {
+    "target": "es2017",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "jsx": "react",
+    "strict": true,
+    "allowJs": true, /* signupLogic is plain JS */
+  },
+  "include": ["src"],
+}

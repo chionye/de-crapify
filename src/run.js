@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createProjectContext, describeContext } from './context/index.js';
 import { contentSkipReason, discoverFiles, SKIP_REASONS } from './discover.js';
 import { EXIT } from './errors.js';
 import { ineffectiveOptionWarnings } from './options.js';
@@ -51,10 +52,20 @@ export async function runClean(options, io) {
   verbose(`Found ${discovery.files.length} candidate file(s) under ${displayPath(discovery.root, io.cwd)}`);
   if (discovery.gitRoot) verbose(`Git root: ${discovery.gitRoot}`);
 
+  const context = createProjectContext({ stopDir: discovery.gitRoot });
+  const describedContexts = new Set();
+
   /** @type {FileResult[]} */
   const results = [];
   for (const file of discovery.files) {
-    const result = await processFile(file, { stats, verbose });
+    const ctx = await context.forFile(file);
+    const contextKey = `${ctx.packages.nearest?.path}|${ctx.tsconfig?.path}`;
+    if (options.verbose && !describedContexts.has(contextKey)) {
+      describedContexts.add(contextKey);
+      verbose(`Project context for ${displayPath(ctx.dir, io.cwd)}:`);
+      for (const line of describeContext(ctx, io.cwd)) verbose(`  ${line}`);
+    }
+    const result = await processFile(file, { stats, verbose, ctx });
     if (result && result.after !== result.before) results.push(result);
   }
 
@@ -79,7 +90,7 @@ export async function runClean(options, io) {
  * The cleanup stages plug in here in later phases.
  *
  * @param {string} file
- * @param {{ stats: import('./output/summary.js').Stats, verbose: (msg: string) => void }} ctx
+ * @param {{ stats: import('./output/summary.js').Stats, verbose: (msg: string) => void, ctx: import('./context/index.js').DirContext }} deps
  * @returns {Promise<FileResult | null>}
  */
 async function processFile(file, { stats, verbose }) {
