@@ -112,3 +112,52 @@ export function applyEdits(source, edits) {
   for (const edit of [...edits].sort((a, b) => b.start - a.start)) out = out.slice(0, edit.start) + out.slice(edit.end);
   return out;
 }
+
+/** The line in our user message after which the chunk's code starts. */
+const CODE_MARKER = 'Clean up this declaration and return only the code:\n\n';
+
+/** The code a test "model" was asked to clean up (from the user message). @param {string} user */
+export function codeFromPrompt(user) {
+  const at = user.indexOf(CODE_MARKER);
+  return at === -1 ? '' : user.slice(at + CODE_MARKER.length);
+}
+
+/**
+ * A fake model that removes whole-line `//` comments, except directives and keep markers.
+ * @param {string} code
+ */
+export function removeNarratingComments(code) {
+  return code
+    .split('\n')
+    .filter((line) => !/^\s*\/\/(?!\s*(@ts-|eslint-|de-crapify-))/.test(line))
+    .join('\n');
+}
+
+/**
+ * A fetch that behaves like an Ollama server.
+ * @param {object} [options]
+ * @param {string[]} [options.models]  Installed models for /api/tags.
+ * @param {(code: string, request: any) => string | { content: string, done_reason?: string } | Error} [options.reply]
+ *   Builds the reply for each /api/chat call; return an Error to make that request fail.
+ */
+export function mockOllamaFetch({ models = ['qwen2.5-coder:7b'], reply = (code) => code } = {}) {
+  /** @type {{ url: string, body: any }[]} */
+  const calls = [];
+  /** @type {typeof globalThis.fetch} */
+  const fetch = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith('/api/tags')) {
+      return new Response(JSON.stringify({ models: models.map((name) => ({ name, model: name })) }), { status: 200 });
+    }
+    if (String(url).endsWith('/api/chat')) {
+      const user = body.messages.find((m) => m.role === 'user').content;
+      const out = reply(codeFromPrompt(user), body);
+      if (out instanceof Error) throw out;
+      const { content, done_reason = 'stop' } = typeof out === 'string' ? { content: out } : out;
+      return new Response(JSON.stringify({ model: body.model, message: { role: 'assistant', content }, done: true, done_reason }), { status: 200 });
+    }
+    return new Response('not found', { status: 404 });
+  };
+  return { fetch, calls };
+}

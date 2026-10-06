@@ -115,8 +115,10 @@ These run first, are fast, and are safe by construction. Each rule produces a li
 
 ### Stage 2: AI cleanup (skipped with `--no-ai`)
 
-- Split the file (after Stage 1) into chunks: each top-level function, class, arrow-function component, or exported declaration is one chunk. Top-level code outside these is left alone in v1.
-- Skip chunks that are tiny (under ~5 lines) or marked `de-crapify-keep`.
+- Split the file (after Stage 1) into chunks: each top-level function, class, function-valued variable (arrow components, `memo(...)`/`forwardRef(...)` wrappers), or exported value is one chunk. Top-level code outside these is left alone in v1, and so are TypeScript interfaces, types and enums (the signature check doesn't cover their members, so a dropped field would go unnoticed).
+- A chunk includes the `//` line comments directly above it (no blank line in between), so narrating comments there can be removed. Block comments and JSDoc above a chunk stay outside it, so the model can never touch them.
+- Skip chunks that are tiny (under ~5 lines), marked `de-crapify-keep`, or too large for `--num-ctx` (estimated at ~3.5 characters per token, counting the reply as about as long as the chunk).
+- Process chunks from the end of the file to the start, so accepting a rewrite never shifts the chunks still to come.
 - Send each chunk to Ollama with a small amount of context: the file's import list and the names of other top-level declarations, so the model doesn't invent or remove references.
 - The model may only: remove comments that restate what the code obviously does, flatten unnecessary nesting (e.g. early returns), remove redundant intermediate variables, and merge clearly duplicated logic. It must keep the same function name, parameters, return behavior, and side effects. It must not add new imports, new dependencies, or new features, and must not rename anything that's used outside the chunk. In React components it must not move, add, remove, or reorder hook calls, and must not add an early return before any hook call.
 - Never send JSDoc comments, TypeScript type annotations, or `eslint-disable` / `@ts-ignore` / `@ts-expect-error` comments as things to remove; the prompt must tell the model to keep them.
@@ -158,7 +160,8 @@ After all chunks: if `--write` and `--test-cmd` are set, write the file, run the
   - Not reachable: print with `chalk.yellow` that Ollama doesn't seem to be running, suggest `ollama serve`, mention `--no-ai` as an alternative, and exit with code 2.
   - Model missing: print the exact `ollama pull <model>` command, list the models that *are* installed, and exit with code 2. Do not silently fall back to another model.
 - Use `POST /api/chat` with `stream: false`, a system message plus a user message, and `options: { temperature: 0, num_ctx: <--num-ctx> }`.
-- Add a per-request timeout (e.g. 120s with `AbortController`). On timeout or error for one chunk, skip that chunk and continue; don't crash the run.
+- Add a per-request timeout (120s with `AbortController`; the preflight uses 5s). On timeout or error for one chunk, skip that chunk and continue; don't crash the run. Failed requests are counted in the summary's AI line, not as rejected suggestions.
+- A model name without a tag means `:latest`, as in Ollama. Never match a different tag.
 - Write the system prompt as a separate exported constant so it's easy to tune. It should be strict and specific: return only code, no explanations, no markdown fences; list exactly what may and may not be changed (from Stage 2 above, including the hooks and type-annotation rules); and say that if nothing should change, return the code unchanged. Tell the model the file's language (JS, TS, JSX, TSX) and whether it's React / React Native code.
 
 ## Output

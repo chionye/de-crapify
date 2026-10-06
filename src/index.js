@@ -34,7 +34,8 @@ async function main(argv) {
       return error.exitCode === 0 ? EXIT.OK : EXIT.SETUP_ERROR;
     }
     if (error instanceof SetupError) {
-      process.stderr.write(chalk.red(`de-crapify: ${error.message}`) + '\n');
+      const color = error.warning ? chalk.yellow : chalk.red;
+      process.stderr.write(color(`de-crapify: ${error.message}`) + '\n');
       if (error.hint) process.stderr.write(chalk.yellow(error.hint) + '\n');
       return EXIT.SETUP_ERROR;
     }

@@ -1,5 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { aiCleanupFile } from './ai/cleanup.js';
+import { createOllamaClient } from './ai/ollama.js';
 import { createProjectContext, describeContext } from './context/index.js';
 import { contentSkipReason, discoverFiles, SKIP_REASONS } from './discover.js';
 import { EXIT } from './errors.js';
@@ -8,7 +10,7 @@ import { parseCode } from './parse.js';
 import { runDeterministicRules } from './rules/index.js';
 import { formatDiff, formatReasons } from './output/diff.js';
 import { formatReports } from './output/reports.js';
-import { createStats, formatSummary, reportCounts } from './output/summary.js';
+import { createStats, formatSummary, recordAiRejection, reportCounts } from './output/summary.js';
 import { loadProjectTypeScript, typecheckChanges } from './typecheck.js';
 
 /**
@@ -33,6 +35,7 @@ import { loadProjectTypeScript, typecheckChanges } from './typecheck.js';
 /**
  * @typedef {object} RunDeps  Injectable for tests.
  * @property {(fromDir: string) => any} [loadTypeScript]
+ * @property {typeof globalThis.fetch} [fetch]   Used for Ollama.
  */
 
 /**
@@ -56,12 +59,21 @@ export async function runClean(options, io, deps = {}) {
   }
 
   const stats = createStats();
-  stats.aiStatus = options.ai ? 'not available yet in this build' : 'off (--no-ai)';
+  stats.aiStatus = 'off (--no-ai)';
 
   const discovery = await discoverFiles(path.resolve(io.cwd, options.targetPath), { maxFileSizeBytes: options.maxFileSizeBytes });
   stats.skipped.push(...discovery.skipped);
   verbose(`Found ${discovery.files.length} candidate file(s) under ${displayPath(discovery.root, io.cwd)}`);
   if (discovery.gitRoot) verbose(`Git root: ${discovery.gitRoot}`);
+
+  /** @type {import('./ai/ollama.js').OllamaClient | null} */
+  let client = null;
+  if (options.ai) {
+    client = createOllamaClient({ baseUrl: options.ollamaUrl, model: options.model, numCtx: options.numCtx, fetch: deps.fetch });
+    await client.preflight(); // throws SetupError (exit 2) if Ollama or the model isn't there
+    verbose(`Ollama: ${options.ollamaUrl}, model ${options.model}, num_ctx ${options.numCtx}`);
+  }
+  const aiTotals = { chunks: 0, failures: 0 };
 
   const context = createProjectContext({ stopDir: discovery.gitRoot });
   const describedContexts = new Set();
@@ -76,8 +88,13 @@ export async function runClean(options, io, deps = {}) {
       verbose(`Project context for ${displayPath(ctx.dir, io.cwd)}:`);
       for (const line of describeContext(ctx, io.cwd)) verbose(`  ${line}`);
     }
-    const result = await processFile(file, { stats, verbose, ctx, files: context.files, options });
+    const result = await processFile(file, { stats, verbose, ctx, files: context.files, options, client, aiTotals, io });
     if (result && result.after !== result.before) results.push(result);
+  }
+
+  if (client) {
+    const failed = aiTotals.failures ? `, ${aiTotals.failures} request(s) failed or timed out` : '';
+    stats.aiStatus = `${options.model} (${aiTotals.chunks} chunk(s) sent${failed})`;
   }
 
   typecheck(results, { options, io, stats, verbose, loadTypeScript: deps.loadTypeScript });
@@ -86,6 +103,7 @@ export async function runClean(options, io, deps = {}) {
     if (result.after === result.before) continue;
     stats.filesChanged++;
     stats.deterministicFixes += result.stage1Reasons.length;
+    stats.aiAccepted += result.aiReasons.length;
     io.out(formatDiff(displayPath(result.file, io.cwd), result.before, result.after, { chalk }));
     io.out(formatReasons(currentReasons(result), { chalk }));
     io.out('');
@@ -116,9 +134,12 @@ export async function runClean(options, io, deps = {}) {
  * @param {import('./context/index.js').DirContext} deps.ctx
  * @param {import('./context/files.js').FileCache} deps.files
  * @param {import('./options.js').Options} deps.options
+ * @param {import('./ai/ollama.js').OllamaClient | null} deps.client
+ * @param {{ chunks: number, failures: number }} deps.aiTotals
+ * @param {RunIO} deps.io
  * @returns {Promise<FileResult | null>}
  */
-async function processFile(file, { stats, verbose, ctx, files, options }) {
+async function processFile(file, { stats, verbose, ctx, files, options, client, aiTotals, io }) {
   const source = await fs.readFile(file, 'utf8');
   const skipReason = contentSkipReason(source);
   if (skipReason) {
@@ -141,13 +162,37 @@ async function processFile(file, { stats, verbose, ctx, files, options }) {
   for (const note of stage1.notes) verbose(`  ${note}`);
   stats.reports.push(...stage1.reports.map((r) => ({ ...r, file })));
 
+  let after = stage1.output;
+  /** @type {string[]} */
+  let aiReasons = [];
+  if (client) {
+    const shown = displayPath(file, io.cwd);
+    const ai = await aiCleanupFile({
+      source: stage1.output,
+      filePath: file,
+      displayPath: shown,
+      ctx,
+      client,
+      numCtx: options.numCtx,
+      log: verbose,
+      progress: (name, index, total) => {
+        if (!options.verbose) io.err(io.chalk.dim(`AI ${shown} › ${name} (${index}/${total})`));
+      },
+    });
+    after = ai.output;
+    aiReasons = ai.reasons;
+    aiTotals.chunks += ai.chunks;
+    aiTotals.failures += ai.failures.length;
+    for (const rejection of ai.rejected) recordAiRejection(stats, rejection.label);
+  }
+
   return {
     file,
     before: source,
     stage1: stage1.output,
-    after: stage1.output,
+    after,
     stage1Reasons: stage1.reasons,
-    aiReasons: [],
+    aiReasons,
     tsconfigPath: ctx.typescript.tsconfigPath,
   };
 }

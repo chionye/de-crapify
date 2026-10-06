@@ -12,11 +12,13 @@ export const EXIT = Object.freeze({
 export class SetupError extends Error {
   /**
    * @param {string} message
-   * @param {{ hint?: string }} [details]
+   * @param {{ hint?: string, warning?: boolean }} [details]  `warning` prints the message in yellow
+   *   instead of red (e.g. "Ollama doesn't seem to be running": a state, not a mistake).
    */
-  constructor(message, { hint } = {}) {
+  constructor(message, { hint, warning = false } = {}) {
     super(message);
     this.name = 'SetupError';
     this.hint = hint;
+    this.warning = warning;
   }
 }

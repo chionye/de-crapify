@@ -80,7 +80,24 @@ The guiding rule throughout: **a missed cleanup is fine; a broken file or a fals
 | With the CLI backend (TS 7+), dry run skips the typecheck and says so; write mode writes each candidate temporarily and always restores | The binary can only check files on disk, and a dry run must never write. The spec allowed skipping in dry run. |
 | A file that adds type errors first loses only its AI changes; only if it still fails are all its changes dropped | Keeps safe deterministic fixes where possible. It also catches the rare case where removing an "unused" import breaks a type augmentation. |
 
+## AI stage (Ollama)
+
+| Decision | Why |
+|---|---|
+| Chunks include the `//` comments directly above them; JSDoc and block comments above stay outside the chunk | Narrating comments above a function can be removed, while JSDoc and license headers are protected by construction, not just by the prompt. |
+| TypeScript interfaces, types and enums are never sent to the model | The signature check doesn't cover their members; a dropped field would only be caught by the typecheck, which may not run. |
+| Non-exported plain values (`const settings = {...}`) are not chunks; exported ones are | The spec's list: functions, classes, components, exported declarations. |
+| Chunks are processed from the end of the file to the start | Applying a rewrite never shifts the positions of chunks still to come; no re-parsing needed between calls. |
+| Chunks too large for `--num-ctx` are skipped up front (≈ 3.5 chars/token, reply ≈ chunk size) | Otherwise the model runs out of context mid-reply, wasting minutes before the reply is rejected as truncated. |
+| "Ollama not running" is a yellow warning (still exit 2); "model missing" is a red error | The first is a state to fix; the second is usually a typo or a missing `ollama pull`. |
+| A model name without a tag means `:latest`; other tags never match | Mirrors Ollama, and never silently uses a different model. |
+| Failed or timed-out requests appear in the summary's AI line, not as "rejected suggestions" | They aren't suggestions; mixing them would hide model-quality signal. |
+| AI fixes are counted after the typecheck | So changes the typecheck drops aren't reported as accepted. |
+| Without `--verbose`, one progress line per chunk goes to stderr | Local models take seconds to minutes per chunk; a silent run looks hung. stdout stays clean for the diff. |
+| AI reasons describe what changed, from the AST (comments removed, nesting flattened, variables removed) | Matches the spec's example ("AI: flattened nested conditionals in `handleSubmit`") without trusting the model's own description. |
+
 ## Open items
 
-- **Size limits** for AI rewrites: re-tune after trying a real model (Phase 5).
+- **Size limits** for AI rewrites: re-tune after trying a real model.
+- **Real-model trial:** everything in the AI stage is tested with a mocked Ollama; prompt wording and limits should be tuned against `qwen2.5-coder:7b` (or whichever model you use).
 - **Narrating comments left above removed console calls** (`// Log the current state`): left for the AI stage, which may remove narrating comments.

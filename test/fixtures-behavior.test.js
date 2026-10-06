@@ -6,10 +6,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { after, beforeEach, describe, it, mock } from 'node:test';
 import { pathToFileURL } from 'node:url';
+import { aiCleanupFile } from '../src/ai/cleanup.js';
+import { createOllamaClient } from '../src/ai/ollama.js';
 import { createProjectContext } from '../src/context/index.js';
 import { parseCode } from '../src/parse.js';
 import { runDeterministicRules } from '../src/rules/index.js';
-import { FIXTURES_DIR, makeTempTree, removeTree } from './helpers.js';
+import { FIXTURES_DIR, makeTempTree, mockOllamaFetch, removeNarratingComments, removeTree } from './helpers.js';
 
 /** Fixture files with runnable logic, relative to test-fixtures/. */
 const RUNNABLE = [
@@ -30,10 +32,15 @@ function loadFixtureModule(root, rel) {
 }
 
 /**
- * Copy test-fixtures/ to a temp dir and run the deterministic rules over the runnable files.
- * Returns the copy's path and how many files actually changed.
+ * Copy test-fixtures/ to a temp dir and run the deterministic rules (and, with `ai`, the AI stage
+ * with a mock model that strips narrating comments) over the runnable files. Every AI rewrite goes
+ * through the real validation. Returns the copy's path and how many files actually changed.
+ * @param {{ ai?: boolean }} [options]
  */
-async function cleanedFixturesCopy() {
+async function cleanedFixturesCopy({ ai = false } = {}) {
+  const client = ai
+    ? createOllamaClient({ baseUrl: 'http://mock', model: 'qwen2.5-coder:7b', numCtx: 8192, fetch: mockOllamaFetch({ reply: removeNarratingComments }).fetch })
+    : null;
   const tmp = await makeTempTree();
   const root = path.join(tmp, 'test-fixtures');
   await fs.cp(FIXTURES_DIR, root, { recursive: true });
@@ -53,8 +60,12 @@ async function cleanedFixturesCopy() {
       files: context.files,
       options: { keepConsole: new Set(['error', 'warn']) },
     });
-    if (output !== source) changed++;
-    await fs.writeFile(filePath, output);
+    const ctx = await context.forFile(filePath);
+    const final = client
+      ? (await aiCleanupFile({ source: output, filePath, displayPath: rel, ctx, client, numCtx: 8192 })).output
+      : output;
+    if (final !== source) changed++;
+    await fs.writeFile(filePath, final);
   }
   return { tmp, root, changed };
 }
@@ -160,7 +171,11 @@ function behaviorSuites(label, root) {
 behaviorSuites('original', FIXTURES_DIR);
 
 const cleaned = await cleanedFixturesCopy();
-after(() => removeTree(cleaned.tmp));
+const aiCleaned = await cleanedFixturesCopy({ ai: true });
+after(async () => {
+  await removeTree(cleaned.tmp);
+  await removeTree(aiCleaned.tmp);
+});
 
 describe('cleaned copy', () => {
   it('actually contains cleanups', () => {
@@ -170,3 +185,11 @@ describe('cleaned copy', () => {
 });
 
 behaviorSuites('after deterministic cleanup', cleaned.root);
+
+describe('AI-cleaned copy', () => {
+  it('actually contains AI cleanups', () => {
+    assert.ok(aiCleaned.changed > cleaned.changed, `AI changed ${aiCleaned.changed} files vs ${cleaned.changed} without AI`);
+  });
+});
+
+behaviorSuites('after deterministic + AI cleanup (mock model)', aiCleaned.root);
