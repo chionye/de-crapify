@@ -1,0 +1,39 @@
+{
+  "name": "de-crapify",
+  "version": "0.1.0",
+  "description": "Clean up the messy patterns AI coding assistants leave in JS/TS code, locally and safely.",
+  "type": "module",
+  "bin": {
+    "de-crapify": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "cli",
+    "cleanup",
+    "ai",
+    "ollama",
+    "lint",
+    "javascript",
+    "typescript",
+    "react"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@babel/parser": "^7.29.9",
+    "@babel/traverse": "^7.29.8",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "diff": "^9.0.0",
+    "ignore": "^7.0.12",
+    "magic-string": "^1.4.3"
+  }
+}
