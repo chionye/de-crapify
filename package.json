@@ -35,5 +35,9 @@
     "diff": "^9.0.0",
     "ignore": "^7.0.12",
     "magic-string": "^1.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "typescript-6": "npm:typescript@^6.0.3"
   }
 }

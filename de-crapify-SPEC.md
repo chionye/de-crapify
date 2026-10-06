@@ -23,7 +23,8 @@ It runs 100% locally. The AI part uses Ollama on the user's machine. No cloud AI
 - Dependencies: `commander`, `chalk`, `diff`, `ignore` (for .gitignore rules), `@babel/parser`, `@babel/traverse`, `magic-string` (to remove code ranges without reformatting the rest of the file).
 - Use `node:fs/promises` and `node:path` (no `fs-extra`). Use native `fetch` for Ollama.
 - Tests: the built-in `node:test` runner and `node:assert`. Tests must never need Ollama running; the Ollama client must accept an injectable `fetch` so tests can mock it.
-- Do **not** add TypeScript as a dependency. For type-checking, use the project's own `tsc` (see Validation).
+- Do **not** add TypeScript as a (runtime) dependency. For type-checking, use the project's own TypeScript (see Validation). `typescript` (7.x) and `typescript-6` (an alias of 6.x) are devDependencies used only by tests, to exercise both typecheck backends against real compilers.
+- Dependency versions must support Node 20: `commander` 14 and `chalk` 5 (later majors require Node 22).
 
 ### Supported files and parsing
 
@@ -69,7 +70,7 @@ Options:
 - Respect git ignore rules: inside a git repo, list files with `git ls-files --cached --others --exclude-standard` (exact git semantics, including nested `.gitignore` files). Outside a git repo, fall back to the `ignore` package, applying every `.gitignore` found in the walked directories and the nearest one above the target.
 - Skip minified files (e.g. `*.min.js`, or a single line longer than ~1000 characters), declaration files (`*.d.ts`, `*.d.mts`, `*.d.cts`), and generated files containing a `@generated` marker.
 - A file containing `// de-crapify-ignore-file` is skipped entirely.
-- Any statement or declaration directly preceded by a `// de-crapify-keep` comment must never be changed by any rule or the AI.
+- Any statement or declaration directly preceded by a `// de-crapify-keep` comment (other comments may sit in between) must never be changed by any rule or the AI. A marker at the end of a line (`console.log(x); // de-crapify-keep`) also protects the statement on that line.
 
 ## Project context (load once per run)
 
@@ -81,7 +82,7 @@ Before processing files, build a small project context object. Rules use it to a
   1. a per-file `/** @jsxRuntime classic|automatic */` pragma;
   2. tsconfig `jsx`: `react` → classic; `react-jsx` / `react-jsxdev` → automatic (`preserve` decides nothing; Next.js sets it);
   3. React version below 17 → classic;
-  4. the project uses Expo, Next.js, or Vite with React 17+ → automatic;
+  4. the project uses Expo, Next.js, or Vite with its React plugin (`@vitejs/plugin-react` or `-swc`; Vite's own esbuild JSX is classic), with a *known* React version of 17+ → automatic;
   5. otherwise classic. **If unsure, assume classic** (the safe choice).
 - **TypeScript:** whether a `tsconfig.json` exists and `typescript` is installed in the project (for the typecheck step), and `compilerOptions.moduleSuffixes` (React Native projects use it for platform files).
 
@@ -96,7 +97,7 @@ These run first, are fast, and are safe by construction. Each rule produces a li
    - type-only usages (they count as usages in TypeScript);
    - the `React` import (default `import React` or namespace `import * as React`) in any file containing JSX, **unless** the project context says the automatic JSX runtime is in use;
    - anything imported in a file that also uses `eval`, `with`, or JSX pragma comments (`/** @jsx h */`); skip this rule for those files.
-2. **Debug console calls.** Remove standalone expression statements like `console.log(...)`, `console.debug(...)`, `console.info(...)`, `console.trace(...)`, `console.dir(...)`, `console.table(...)`. Do not remove methods listed in `--keep-console`. Do not remove console calls that are part of a larger expression or whose arguments could have a side effect (only literals, identifiers, member access, spreads of those, and templates/objects/arrays built from them are safe; calls, `new`, `await`, assignments, `++`/`--`, and tagged templates are not); report them instead. Only remove a call whose parent is a block or the program body; never remove one that is the body of a brace-less `if`/`else`/`for`/`while`/`do` (removing it would make the next statement conditional) or the body of an arrow function without braces (e.g. `onPress={() => console.log('x')}`, which would break the syntax); report those instead. Skip calls where `console` is a local binding rather than the global.
+2. **Debug console calls.** Remove standalone expression statements like `console.log(...)`, `console.debug(...)`, `console.info(...)`, `console.trace(...)`, `console.dir(...)`, `console.table(...)`. Do not remove methods listed in `--keep-console`. Do not remove console calls that are part of a larger expression or whose arguments could have a side effect (only literals, identifiers, member access, spreads of those, and templates/objects/arrays built from them are safe; calls, `new`, `await`, assignments, `++`/`--`, and tagged templates are not); report them instead. Only remove a call whose parent is a block or the program body; never remove one that is the body of a brace-less `if`/`else`/`for`/`while`/`do` (removing it would make the next statement conditional) or the body of an arrow function without braces (e.g. `onPress={() => console.log('x')}`, which would break the syntax); report those instead. Skip calls where `console` is a local binding rather than the global. Operators over safe values (`'n: ' + n`, `!x`, `a ?? b`, `a ? b : c`; not `delete`) and TypeScript casts are also safe: they carry the same risk as template literals. When removals leave an `if` with no `else` empty, and its condition is side-effect free, remove the whole `if` (e.g. `if (__DEV__) { console.log(...) }`); never touch an `if` that was already empty.
 3. **Unresolvable imports (report only, never delete).** Report in two levels, so the tool doesn't cry wolf:
    - **Likely hallucinated:** a bare package import (e.g. `import x from 'react-super-forms'`) that isn't installed per the project context, isn't a Node built-in (with or without the `node:` prefix), isn't a workspace package, and doesn't match any known alias; or a relative import whose file doesn't exist.
    - **Could not verify:** an import starting with an alias-like prefix (`@/`, `~/`, `#`, or `@something/` that isn't an installed scoped package) when the project has JS config files that might define aliases the tool can't read. Also: `require()` / `import()` inside a `try` block (the optional-dependency pattern) that would otherwise be "likely hallucinated".
@@ -137,14 +138,17 @@ For each AI-rewritten chunk:
 10. **Kept statements untouched:** any statement inside the chunk preceded by `// de-crapify-keep` must appear byte-identical in the rewrite.
 11. If the rewrite, measured with comments and whitespace stripped, is more than ~60% shorter than the original, or longer than the original, reject it as suspicious (constant, easy to tune). Comment-only removal is never rejected by this check.
 
+A rewrite that is the same code as the original apart from formatting (same AST, same comments) is treated as "no change", so formatting churn never reaches the diff. In check 6, `undefined`, `NaN` and `Infinity` are never counted as new identifiers.
+
 Rejected suggestions are dropped silently in normal mode and logged with the reason in `--verbose` mode.
 
-**Typecheck (project-level):** when typecheck is enabled, run the project's `tsc --noEmit` (via its local `node_modules/.bin/tsc`) once **before** any changes to record the baseline errors. Compare errors as a multiset keyed by file, line-independent message, and code (so a second copy of an existing error counts as new).
+**Typecheck (project-level):** when typecheck is enabled, use the scanned project's own TypeScript to check that the changes add no new type errors. Compare errors as a multiset keyed by file, line-independent message, and code (so a second copy of an existing error counts as new). The baseline is the project as it is on disk. Two backends, chosen by what the project has installed:
 
-- **Solution-style tsconfigs:** if the `tsconfig.json` has `"files": []` (or no inputs) and only `references` (the Vite template does this), `tsc -p` on it checks nothing. Detect this and run each referenced config instead. The summary must name the configs that were checked.
-- **Write mode:** write all accepted changes, then run `tsc` once. If there are new errors, find the cause by restoring and rechecking file by file; revert only the files that introduce new errors, and report them.
-- **Dry-run mode:** load the project's own `typescript` package (via `createRequire` from the project, never bundled or installed) and type-check in memory with a compiler host that serves the modified file contents. If that proves too complex, skip the typecheck in dry-run and say so in the summary.
-- Never install TypeScript on the user's behalf. Note in the README that typecheck runs the scanned project's own `tsc` binary/package, i.e. code from that project.
+- **API backend (TypeScript ≤ 6):** load the project's `typescript` package (via `createRequire` from the project, never bundled or installed) and type-check in memory with a compiler host that serves the modified file contents. Used in **both** dry-run and write mode; in write mode the check happens *before* anything is written, so a file that fails never reaches disk.
+- **CLI backend (TypeScript 7+):** the native compiler has no classic JS API (its package only exports `version` and `unstable/*`), so run the project's `tsc` script (`node <typescript/bin/tsc> --noEmit -p <config> --pretty false`) and parse its output. It can only check files on disk: in write mode, each candidate version is written temporarily, checked, and the previous content is always restored afterwards; in dry-run mode it's skipped and the summary says so.
+- **Solution-style tsconfigs:** if the `tsconfig.json` has `"files": []` (and no `include`) and only `references` (the Vite template does this), checking it checks nothing. Detect this and check each referenced config instead. The summary must name the configs that were checked.
+- **Finding the culprit:** if the changes together add errors, check each changed file on its own; files that add errors alone are changed back (if none does alone, they interact and all are). A changed-back file first loses only its AI changes; if it still adds errors, all of its changes are dropped. Repeat until the remaining changes are clean.
+- Never install TypeScript on the user's behalf. Note in the README that typecheck runs the scanned project's own TypeScript package/binary, i.e. code from that project.
 
 After all chunks: if `--write` and `--test-cmd` are set, write the file, run the test command, and if it fails, restore the original file and report it. The test command is run once before any changes as a baseline; if the baseline fails, abort (exit 2) rather than reverting every file.
 

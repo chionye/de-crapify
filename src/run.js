@@ -9,6 +9,7 @@ import { runDeterministicRules } from './rules/index.js';
 import { formatDiff, formatReasons } from './output/diff.js';
 import { formatReports } from './output/reports.js';
 import { createStats, formatSummary, reportCounts } from './output/summary.js';
+import { loadProjectTypeScript, typecheckChanges } from './typecheck.js';
 
 /**
  * @typedef {object} RunIO
@@ -21,9 +22,17 @@ import { createStats, formatSummary, reportCounts } from './output/summary.js';
 /**
  * @typedef {object} FileResult
  * @property {string} file
- * @property {string} before
- * @property {string} after
- * @property {string[]} reasons
+ * @property {string} before         Content on disk.
+ * @property {string} stage1         After the deterministic rules.
+ * @property {string} after          Final content (after AI cleanup and any typecheck reverts).
+ * @property {string[]} stage1Reasons
+ * @property {string[]} aiReasons
+ * @property {string | null} tsconfigPath
+ */
+
+/**
+ * @typedef {object} RunDeps  Injectable for tests.
+ * @property {(fromDir: string) => any} [loadTypeScript]
  */
 
 /**
@@ -32,9 +41,10 @@ import { createStats, formatSummary, reportCounts } from './output/summary.js';
  *
  * @param {import('./options.js').Options} options
  * @param {RunIO} io
+ * @param {RunDeps} [deps]
  * @returns {Promise<number>}
  */
-export async function runClean(options, io) {
+export async function runClean(options, io, deps = {}) {
   const { chalk } = io;
   const verbose = (/** @type {string} */ msg) => {
     if (options.verbose) io.err(chalk.dim(msg));
@@ -47,7 +57,6 @@ export async function runClean(options, io) {
 
   const stats = createStats();
   stats.aiStatus = options.ai ? 'not available yet in this build' : 'off (--no-ai)';
-  stats.typecheckStatus = 'not available yet in this build';
 
   const discovery = await discoverFiles(path.resolve(io.cwd, options.targetPath), { maxFileSizeBytes: options.maxFileSizeBytes });
   stats.skipped.push(...discovery.skipped);
@@ -71,10 +80,14 @@ export async function runClean(options, io) {
     if (result && result.after !== result.before) results.push(result);
   }
 
+  typecheck(results, { options, io, stats, verbose, loadTypeScript: deps.loadTypeScript });
+
   for (const result of results) {
+    if (result.after === result.before) continue;
     stats.filesChanged++;
+    stats.deterministicFixes += result.stage1Reasons.length;
     io.out(formatDiff(displayPath(result.file, io.cwd), result.before, result.after, { chalk }));
-    io.out(formatReasons(result.reasons, { chalk }));
+    io.out(formatReasons(currentReasons(result), { chalk }));
     io.out('');
   }
 
@@ -126,10 +139,61 @@ async function processFile(file, { stats, verbose, ctx, files, options }) {
 
   const stage1 = await runDeterministicRules({ source, ast: parsed.ast, filePath: file, ctx, files, options });
   for (const note of stage1.notes) verbose(`  ${note}`);
-  stats.deterministicFixes += stage1.reasons.length;
   stats.reports.push(...stage1.reports.map((r) => ({ ...r, file })));
 
-  return { file, before: source, after: stage1.output, reasons: stage1.reasons };
+  return {
+    file,
+    before: source,
+    stage1: stage1.output,
+    after: stage1.output,
+    stage1Reasons: stage1.reasons,
+    aiReasons: [],
+    tsconfigPath: ctx.typescript.tsconfigPath,
+  };
+}
+
+/**
+ * The project-level typecheck: changed files that introduce new type errors are changed back
+ * (AI changes first, then everything). Updates results and stats in place.
+ *
+ * @param {FileResult[]} results
+ * @param {object} env
+ * @param {import('./options.js').Options} env.options
+ * @param {RunIO} env.io
+ * @param {import('./output/summary.js').Stats} env.stats
+ * @param {(msg: string) => void} env.verbose
+ * @param {(fromDir: string) => any} [env.loadTypeScript]
+ */
+function typecheck(results, { options, io, stats, verbose, loadTypeScript = loadProjectTypeScript }) {
+  if (options.typecheck === false) {
+    stats.typecheckStatus = 'off (--no-typecheck)';
+    return;
+  }
+  let outcome;
+  try {
+    outcome = typecheckChanges({ files: results, loadTypeScript, cwd: io.cwd });
+  } catch (error) {
+    stats.typecheckStatus = `failed (${/** @type {Error} */ (error).message})`;
+    io.err(io.chalk.yellow(`Typecheck failed to run: ${/** @type {Error} */ (error).message}`));
+    return;
+  }
+  stats.typecheckStatus = outcome.status;
+  if (options.typecheck === true && !outcome.ran) io.err(io.chalk.yellow(`--typecheck: ${outcome.status}`));
+  for (const revert of outcome.reverts) {
+    const result = results.find((r) => r.file === revert.file);
+    if (!result) continue;
+    result.after = revert.revertedTo === 'stage1' ? result.stage1 : result.before;
+    if (revert.revertedTo === 'stage1') result.aiReasons = [];
+    const what = revert.revertedTo === 'stage1' ? 'dropped the AI changes' : 'left the file unchanged';
+    stats.reverted.push({ file: result.file, reason: `new type errors, ${what} (${revert.errors[0] ?? 'see tsc'})` });
+    verbose(`typecheck: ${result.file}: ${revert.errors.join('; ')}`);
+  }
+}
+
+/** @param {FileResult} result */
+function currentReasons(result) {
+  if (result.after === result.before) return [];
+  return [...result.stage1Reasons, ...result.aiReasons.map((r) => `AI: ${r}`)];
 }
 
 /** @param {string} file @param {string} cwd */

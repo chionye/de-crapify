@@ -176,3 +176,44 @@ describe('isSideEffectFree', () => {
     assert.ok(call.arguments.every(isSideEffectFree));
   });
 });
+
+describe('console rule: ifs emptied by the removal', () => {
+  it('removes an if that only contained removed console calls (and its comments)', async () => {
+    const source = "a();\nif (__DEV__) {\n  // debug output\n  console.log('dev');\n  console.debug(state);\n}\nb();\n";
+    const { output, reasons } = await run(source);
+    assert.equal(output, 'a();\nb();\n');
+    assert.equal(reasons.at(-1), 'removed `if (__DEV__)`, which only contained debug logging');
+  });
+
+  it('collapses nested ifs bottom-up', async () => {
+    const source = "function f() {\n  if (debug) {\n    if (verbose) {\n      console.log('v');\n    }\n    console.log('d');\n  }\n  return 1;\n}\n";
+    assert.equal((await run(source)).output, 'function f() {\n  return 1;\n}\n');
+  });
+
+  it('keeps the if when anything else is in it, it has an else, or the condition has side effects', async () => {
+    const cases = [
+      ["if (a) {\n  console.log(1);\n  work();\n}\n", 'if (a) {\n  work();\n}\n'],
+      ["if (a) {\n  console.log(1);\n} else {\n  other();\n}\n", 'if (a) {\n} else {\n  other();\n}\n'],
+      ["if (check()) {\n  console.log(1);\n}\n", 'if (check()) {\n}\n'],
+      ["if (a) {\n  console.log(f());\n}\n", "if (a) {\n  console.log(f());\n}\n"],
+    ];
+    for (const [input, expected] of cases) assert.equal((await run(input)).output, expected, input);
+  });
+
+  it('never removes an if that was already empty, or one in an else-if chain', async () => {
+    assert.equal((await run('if (a) {}\n')).output, 'if (a) {}\n');
+    assert.equal((await run("if (a) {\n  x();\n} else if (b) {\n  console.log(1);\n}\n")).output, 'if (a) {\n  x();\n} else if (b) {\n}\n');
+  });
+
+  it('never removes a kept if', async () => {
+    const source = "// de-crapify-keep\nif (a) {\n  console.log(1);\n}\n";
+    assert.equal((await run(source)).output, source);
+  });
+});
+
+describe('console rule: blank lines', () => {
+  it('does not leave a double blank line where removed code separated two blank lines', async () => {
+    assert.equal((await run("a();\n\nconsole.log(1);\n\nb();\n")).output, 'a();\n\nb();\n');
+    assert.equal((await run("a();\n\nconsole.log(1);\nb();\n")).output, 'a();\n\nb();\n', 'a single blank line stays');
+  });
+});

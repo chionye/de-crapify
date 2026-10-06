@@ -19,6 +19,8 @@ export function consoleCallsRule({ ast, source, keepConsole, keepRanges }) {
   const reasons = [];
   /** @type {import('./shared.js').RuleReport[]} */
   const reports = [];
+  /** Statements this rule removes (console calls, then `if`s they leave empty). */
+  const removed = new Set();
 
   traverse(ast, {
     CallExpression(path) {
@@ -55,12 +57,54 @@ export function consoleCallsRule({ ast, source, keepConsole, keepRanges }) {
       }
 
       const stmt = statement.node;
+      removed.add(stmt);
       edits.push(lineAwareRange(source, /** @type {number} */ (stmt.start), /** @type {number} */ (stmt.end)));
       reasons.push(`removed \`${preview(code)}\``);
     },
   });
 
+  if (removed.size > 0) removeEmptiedIfs({ ast, source, keepRanges, removed, edits, reasons });
   return { edits, reasons, reports };
+}
+
+/**
+ * Remove `if (cond) { ...only removed console calls... }` blocks that our removals leave empty, e.g.
+ * `if (__DEV__) { console.log('x'); }`. Only when the condition has no side effects, there's no
+ * `else`, and the `if` sits directly in a statement list. Runs bottom-up so nested ifs collapse too.
+ * The new edit replaces the inner edits it covers.
+ *
+ * @param {object} input
+ * @param {import('@babel/types').File} input.ast
+ * @param {string} input.source
+ * @param {import('./shared.js').Range[]} input.keepRanges
+ * @param {Set<import('@babel/types').Node>} input.removed
+ * @param {import('./shared.js').Edit[]} input.edits
+ * @param {string[]} input.reasons
+ */
+function removeEmptiedIfs({ ast, source, keepRanges, removed, edits, reasons }) {
+  traverse(ast, {
+    IfStatement: {
+      exit(path) {
+        const { node } = path;
+        if (node.alternate || node.consequent.type !== 'BlockStatement') return;
+        const body = node.consequent.body;
+        if (body.length === 0 || !body.every((s) => removed.has(s))) return;
+        if (!isSideEffectFree(node.test)) return;
+        if (!path.parentPath || !STATEMENT_LIST_PARENTS.has(path.parentPath.node.type)) return;
+        const range = { start: /** @type {number} */ (node.start), end: /** @type {number} */ (node.end) };
+        if (keepRanges.some((r) => r.start < range.end && range.start < r.end)) return;
+
+        removed.add(node);
+        const edit = lineAwareRange(source, range.start, range.end);
+        for (let i = edits.length - 1; i >= 0; i--) {
+          if (edits[i].start >= edit.start && edits[i].end <= edit.end) edits.splice(i, 1);
+        }
+        edits.push(edit);
+        const test = source.slice(/** @type {number} */ (node.test.start), /** @type {number} */ (node.test.end));
+        reasons.push(`removed \`if (${preview(test, 40)})\`, which only contained debug logging`);
+      },
+    },
+  });
 }
 
 /**

@@ -32,7 +32,14 @@ export function lineAwareRange(source, start, end) {
   const aloneAfter = /^[ \t]*\r?$/.test(after);
 
   if (aloneBefore && aloneAfter) {
-    return { start: lineStart, end: lineEnd < source.length ? lineEnd + 1 : lineEnd };
+    let removeEnd = lineEnd < source.length ? lineEnd + 1 : lineEnd;
+    // Don't leave two blank lines where the removed code used to separate them.
+    const prevLineStart = source.lastIndexOf('\n', lineStart - 2) + 1;
+    const prevBlank = lineStart > 0 && /^[ \t]*\r?$/.test(source.slice(prevLineStart, lineStart - 1));
+    const nextLineEnd = source.indexOf('\n', removeEnd);
+    const nextBlank = removeEnd < source.length && nextLineEnd !== -1 && /^[ \t]*\r?$/.test(source.slice(removeEnd, nextLineEnd));
+    if (prevBlank && nextBlank) removeEnd = nextLineEnd + 1;
+    return { start: lineStart, end: removeEnd };
   }
   if (aloneAfter) {
     // `foo(); console.log(x);` → `foo();`
