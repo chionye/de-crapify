@@ -89,6 +89,46 @@ export function isProseLine(line) {
   return /\S\s+\S/.test(trimmed);
 }
 
+/**
+ * If `code` has several top-level statements and exactly one of them declares `name`, return just
+ * that statement (with the `//` comments directly above it). Otherwise return `code` unchanged.
+ * Used to drop imports and neighbouring declarations a model echoed from the prompt.
+ *
+ * @param {string} code
+ * @param {import('@babel/parser').ParserOptions} parserOptions
+ * @param {string} name
+ */
+export function isolateDeclaration(code, parserOptions, name) {
+  let ast;
+  try {
+    ast = parse(code, parserOptions);
+  } catch {
+    return code;
+  }
+  const body = ast.program.body;
+  if (body.length < 2) return code;
+  const matches = body.filter((statement) => declaredNamesOf(statement).join(', ') === name);
+  if (matches.length !== 1) return code;
+  const [statement] = matches;
+  let start = /** @type {number} */ (statement.start);
+  const comments = (ast.comments ?? []).filter((c) => c.type === 'CommentLine' && /** @type {number} */ (c.end) <= start).reverse();
+  for (const comment of comments) {
+    if (!/^[ \t]*\r?\n[ \t]*$/.test(code.slice(/** @type {number} */ (comment.end), start))) break;
+    start = /** @type {number} */ (comment.start);
+  }
+  return code.slice(start, /** @type {number} */ (statement.end));
+}
+
+/** Names a top-level statement declares, unwrapping `export`. @param {any} statement @returns {string[]} */
+function declaredNamesOf(statement) {
+  let node = statement;
+  if (node.type === 'ExportNamedDeclaration' || node.type === 'ExportDefaultDeclaration') node = node.declaration;
+  if (!node) return [];
+  if (node.type === 'VariableDeclaration') return node.declarations.map((/** @type {any} */ d) => d.id?.name).filter(Boolean);
+  if (node.id?.name) return [node.id.name];
+  return statement.type === 'ExportDefaultDeclaration' ? ['default'] : [];
+}
+
 /** @param {string} code @param {import('@babel/parser').ParserOptions} parserOptions */
 export function parses(code, parserOptions) {
   try {

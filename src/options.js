@@ -15,6 +15,9 @@ export const DEFAULTS = Object.freeze({
  * @property {boolean} check
  * @property {boolean} force
  * @property {boolean} ai
+ * @property {'auto' | 'builtin' | 'ollama'} aiProvider
+ * @property {boolean} yes             Allow the one-time model download without asking.
+ * @property {boolean} ollamaExplicit  --model or --ollama-url was given: the user wants Ollama.
  * @property {string} model
  * @property {string} ollamaUrl         Without a trailing slash.
  * @property {number} numCtx
@@ -48,12 +51,20 @@ export function normalizeOptions(targetPath, raw) {
 
   const testCmd = typeof raw.testCmd === 'string' && raw.testCmd.trim() !== '' ? raw.testCmd : undefined;
 
+  const aiProvider = raw.aiProvider ?? 'auto';
+  if (!['auto', 'builtin', 'ollama'].includes(aiProvider)) {
+    throw new SetupError(`--ai-provider must be auto, builtin or ollama, got "${aiProvider}".`);
+  }
+
   return {
     targetPath,
     write,
     check,
     force: Boolean(raw.force),
     ai: raw.ai !== false,
+    aiProvider,
+    yes: Boolean(raw.yes),
+    ollamaExplicit: raw.model !== undefined || raw.ollamaUrl !== undefined,
     model: nonEmptyString(raw.model ?? DEFAULTS.model, '--model'),
     ollamaUrl: parseUrl(raw.ollamaUrl ?? DEFAULTS.ollamaUrl),
     numCtx: positiveInteger(raw.numCtx ?? DEFAULTS.numCtx, '--num-ctx'),

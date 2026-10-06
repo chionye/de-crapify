@@ -5,14 +5,17 @@ export const CHAT_TIMEOUT_MS = 120_000;
 /** Timeout for the preflight `GET /api/tags`: Ollama answers this instantly when it's up. */
 export const PREFLIGHT_TIMEOUT_MS = 5_000;
 
-/** A chat request that failed or timed out. The caller skips that chunk and carries on. */
-export class OllamaRequestError extends Error {
+/** A chat request that failed or timed out (any provider). The caller skips that chunk and carries on. */
+export class AiRequestError extends Error {
   /** @param {string} message */
   constructor(message) {
     super(message);
-    this.name = 'OllamaRequestError';
+    this.name = 'AiRequestError';
   }
 }
+
+/** The Ollama client's name for it, kept for readability at call sites. */
+export const OllamaRequestError = AiRequestError;
 
 /**
  * A minimal Ollama client. `fetch` is injectable so tests never need Ollama running.

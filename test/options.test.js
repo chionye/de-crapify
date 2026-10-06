@@ -11,6 +11,9 @@ describe('normalizeOptions', () => {
     assert.equal(o.check, false);
     assert.equal(o.force, false);
     assert.equal(o.ai, true);
+    assert.equal(o.aiProvider, 'auto');
+    assert.equal(o.yes, false);
+    assert.equal(o.ollamaExplicit, false);
     assert.equal(o.model, DEFAULTS.model);
     assert.equal(o.ollamaUrl, 'http://localhost:11434');
     assert.equal(o.numCtx, 8192);
@@ -44,6 +47,15 @@ describe('normalizeOptions', () => {
     assert.equal(o.testCmd, 'npm test');
     assert.equal(o.maxFileSizeBytes, 50 * 1024);
     assert.deepEqual([...o.keepConsole], ['error', 'warn', 'info']);
+  });
+
+  it('marks Ollama as explicitly wanted when --model or --ollama-url is given', () => {
+    assert.equal(normalizeOptions('x', { model: 'llama3:8b' }).ollamaExplicit, true);
+    assert.equal(normalizeOptions('x', { ollamaUrl: 'http://gpu:11434' }).ollamaExplicit, true);
+  });
+
+  it('rejects an unknown --ai-provider', () => {
+    assert.throws(() => normalizeOptions('x', { aiProvider: 'cloud' }), SetupError);
   });
 
   it('treats --typecheck as an explicit on', () => {

@@ -5,7 +5,7 @@ import { parseCode } from '../parse.js';
 import { traverse } from '../rules/shared.js';
 import { CHECKS, validateRewrite } from '../validate/index.js';
 import { estimateTokens, findChunks } from './chunk.js';
-import { OllamaRequestError } from './ollama.js';
+import { AiRequestError } from './ollama.js';
 import { buildUserMessage, languageLabel, SYSTEM_PROMPT } from './prompt.js';
 
 /**
@@ -27,7 +27,7 @@ import { buildUserMessage, languageLabel, SYSTEM_PROMPT } from './prompt.js';
  * @param {string} input.filePath
  * @param {string} input.displayPath
  * @param {import('../context/index.js').DirContext} input.ctx
- * @param {import('./ollama.js').OllamaClient} input.client
+ * @param {{ chat: (m: { system: string, user: string }) => Promise<{ content: string, doneReason: string | undefined }> }} input.client
  * @param {number} input.numCtx
  * @param {(msg: string) => void} [input.log]  Verbose log.
  * @param {(name: string, index: number, total: number) => void} [input.progress]  Called before each model call.
@@ -71,7 +71,7 @@ export async function aiCleanupFile({ source, filePath, displayPath, ctx, client
       log(`  AI ${chunk.name} (${chunk.lines} lines)…`);
       reply = await client.chat({ system: SYSTEM_PROMPT, user });
     } catch (error) {
-      const message = error instanceof OllamaRequestError ? error.message : `unexpected error: ${/** @type {Error} */ (error).message}`;
+      const message = error instanceof AiRequestError ? error.message : `unexpected error: ${/** @type {Error} */ (error).message}`;
       result.failures.push({ name: chunk.name, message });
       log(`  AI ${chunk.name}: skipped, ${message}`);
       continue;

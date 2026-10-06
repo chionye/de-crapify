@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createInterface } from 'node:readline/promises';
 import chalk from 'chalk';
 import { CommanderError } from 'commander';
 import { createProgram } from './cli.js';
@@ -21,6 +22,18 @@ async function main(argv) {
         err: (text) => process.stderr.write(text + '\n'),
         chalk,
         cwd: process.cwd(),
+        interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+        ask: async (question) => {
+          const rl = createInterface({ input: process.stdin, output: process.stderr });
+          try {
+            return await rl.question(question);
+          } finally {
+            rl.close();
+          }
+        },
+        statusLine: process.stderr.isTTY
+          ? (text) => process.stderr.write(text === null ? '\r\x1b[K' : `\r\x1b[K${chalk.dim(text)}`)
+          : undefined,
       });
     },
   });

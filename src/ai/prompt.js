@@ -11,6 +11,7 @@ You receive exactly ONE top-level declaration (a function, class, component, or 
 OUTPUT FORMAT
 - Return ONLY the code. No explanations, no notes, no markdown, no code fences.
 - Return the complete declaration, from its first line to its last line.
+- Return ONLY that one declaration. Never repeat the imports or any other code from the file: they are shown to you for reference only.
 - If nothing should change, return the code exactly as you received it.
 - Do not reformat code you are not changing: keep its indentation, quotes and line breaks.
 

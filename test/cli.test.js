@@ -27,8 +27,10 @@ describe('CLI flag parsing', () => {
     assert.equal(raw.ai, true);
     assert.equal(raw.write, undefined);
     assert.equal(raw.typecheck, undefined, 'typecheck stays undefined (auto) when neither flag is given');
-    assert.equal(raw.model, 'qwen2.5-coder:7b');
-    assert.equal(raw.ollamaUrl, 'http://localhost:11434');
+    assert.equal(raw.model, undefined, 'no default here, so we can tell when Ollama was asked for');
+    assert.equal(raw.ollamaUrl, undefined);
+    assert.equal(raw.aiProvider, 'auto');
+    assert.equal(raw.yes, undefined);
     assert.equal(raw.numCtx, '8192');
     assert.equal(raw.maxFileSize, '200');
     assert.equal(raw.keepConsole, 'error,warn');
@@ -40,6 +42,8 @@ describe('CLI flag parsing', () => {
       '--write',
       '--force',
       '--no-ai',
+      '--ai-provider', 'builtin',
+      '--yes',
       '--model', 'm:1b',
       '--ollama-url', 'http://h:1',
       '--num-ctx', '4096',
@@ -52,6 +56,8 @@ describe('CLI flag parsing', () => {
     assert.equal(raw.write, true);
     assert.equal(raw.force, true);
     assert.equal(raw.ai, false);
+    assert.equal(raw.aiProvider, 'builtin');
+    assert.equal(raw.yes, true);
     assert.equal(raw.model, 'm:1b');
     assert.equal(raw.ollamaUrl, 'http://h:1');
     assert.equal(raw.numCtx, '4096');
@@ -102,6 +108,10 @@ describe('CLI end to end (exit codes)', () => {
     assert.equal(run('clean', '.', '--bogus').status, 2);
     assert.equal(run('clean').status, 2);
     assert.equal(run().status, 2);
+  });
+
+  it('exits 2 for an unknown --ai-provider', () => {
+    assert.equal(run('clean', '.', '--ai-provider', 'cloud').status, 2);
   });
 
   it('exits 2 for an invalid number', () => {

@@ -20,7 +20,7 @@ You are building **de-crapify**, an open-source Node.js CLI that cleans up messy
 
 - Node.js >= 20, plain JavaScript, ES modules (`"type": "module"`). Use JSDoc types where they help.
 - `package.json` exposes the binary: `"bin": { "de-crapify": "./src/index.js" }`, with `#!/usr/bin/env node` at the top of that file. Declare `"engines": { "node": ">=20" }`.
-- Dependencies: `commander`, `chalk`, `diff`, `ignore` (for .gitignore rules), `@babel/parser`, `@babel/traverse`, `magic-string` (to remove code ranges without reformatting the rest of the file), and `node-llama-cpp` (Phase 7: runs the built-in model in-process; prebuilt for macOS, Windows and Linux).
+- Dependencies: `commander`, `chalk`, `diff`, `ignore` (for .gitignore rules), `@babel/parser`, `@babel/traverse`, `magic-string` (to remove code ranges without reformatting the rest of the file), and `node-llama-cpp` as an **optional** dependency (runs the built-in model in-process from prebuilt binaries; optional so that if it can't install on some machine, de-crapify still installs and runs without AI). Our `package.json` sets `config.nodeLlamaCppPostinstall: "ignoreFailedBuild"`, and the library is always loaded with `build: "never"` and `skipDownload: true`, so it never clones or compiles llama.cpp.
 - Use `node:fs/promises` and `node:path` (no `fs-extra`). Use native `fetch` for Ollama.
 - Tests: the built-in `node:test` runner and `node:assert`. Tests must never need Ollama running; the Ollama client must accept an injectable `fetch` so tests can mock it.
 - Do **not** add TypeScript as a (runtime) dependency. For type-checking, use the project's own TypeScript (see Validation). `typescript` (7.x) and `typescript-6` (an alias of 6.x) are devDependencies used only by tests, to exercise both typecheck backends against real compilers.
@@ -137,7 +137,7 @@ Rules 5–8 are applied repeatedly (up to a few passes) until nothing changes, b
 
 For each AI-rewritten chunk:
 
-1. Strip markdown code fences and any prose before/after the code (models often add them despite instructions).
+1. Strip markdown code fences and any prose before/after the code (models often add them despite instructions). If the reply has several top-level statements and exactly one declares the chunk's name, keep only that one: small models often echo the imports and neighbouring declarations shown in the prompt. The echoed extras are never applied, and the kept declaration still goes through every check.
 2. If Ollama reports `done_reason` other than `"stop"` (e.g. it hit the length limit), reject.
 3. The chunk must parse on its own (with the same parser settings as the file), and the full file with the chunk replaced must parse.
 4. The set of top-level declared names and exported names in the file must be unchanged.
@@ -166,7 +166,7 @@ After all chunks: if `--write` and `--test-cmd` are set, write the file, run the
 ## AI providers
 
 - **auto (default):** if Ollama answers at `--ollama-url` and has `--model`, use it. Otherwise use the built-in model. If the AI can't be used (the user declines the download, there's no space, or the machine can't run it), print one yellow line saying so and how to enable it, and **continue with the deterministic rules**; this never changes the exit code. In a non-interactive run (no TTY, e.g. CI or `--check`), never prompt: use the built-in model only if it's already downloaded or `--yes` is given.
-- **builtin:** an in-process model via `node-llama-cpp`. Default model: a small code model (Qwen2.5-Coder 1.5B Instruct, GGUF Q4_K_M, about 1 GB) that runs on ordinary laptops without a GPU, using Metal/CUDA/Vulkan when available. Downloaded once on first use, after asking (show the size; `--yes` skips the question), with a progress bar, into the user cache directory (`~/.cache/de-crapify/models`, or the platform equivalent); verified by size/checksum; resumed or re-downloaded if incomplete. Same chat interface, timeouts, `temperature: 0`, and `--num-ctx` as Ollama.
+- **builtin:** an in-process model via `node-llama-cpp`. Default model: a small code model (Qwen2.5-Coder 1.5B Instruct, GGUF Q4_K_M, about 1 GB) that runs on ordinary laptops without a GPU, using Metal/CUDA/Vulkan when available. Downloaded once on first use, after asking (show the size; `--yes` skips the question), with a progress bar, into the user cache directory (`~/.cache/de-crapify/models`, or the platform equivalent); verified by size/checksum; resumed or re-downloaded if incomplete. Same chat interface, `temperature: 0`, and `--num-ctx` as Ollama; the per-chunk timeout is 300s (it may run on CPU only). Exact file: `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` from `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` on Hugging Face, 1,117,320,768 bytes, SHA-256 `cc324af0…6933bb046`. `DE_CRAPIFY_CACHE_DIR` overrides the cache location.
 - **ollama:** as described below. When chosen explicitly with `--ai-provider ollama`, a missing Ollama or model is a setup error (exit 2), as originally specified.
 
 ## Ollama client (`src/ollama.js` or similar)

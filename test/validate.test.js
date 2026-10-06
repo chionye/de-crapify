@@ -133,6 +133,25 @@ describe('validateRewrite: accepts', () => {
   });
 });
 
+describe('validateRewrite: echoed context (small-model habit)', () => {
+  it('keeps only the requested declaration when the model repeats imports and neighbours', () => {
+    const reply = "```tsx\nimport { useEffect, useState } from 'react';\nimport type { User } from './types';\n\nconst LIMIT = 10;\n\n" + GOOD + '\n```';
+    const result = validate(reply);
+    assert.ok(result.ok && result.changed, result.ok ? '' : result.reason);
+    assert.ok(result.ok && result.changed && !result.code.includes('import'), 'echoed imports are dropped');
+    assert.equal(result.ok && result.changed && result.fileSource.match(/import \{ useEffect/g)?.length, 1);
+  });
+
+  it('still rejects a helper the declaration depends on (it is not applied, so it is invented)', () => {
+    const reply = `function formatName(u) {\n  return u.name;\n}\n\n${edit(GOOD, '{compact ? user.name', '{compact ? formatName(user)')}`;
+    assertRejected(validate(reply), 'identifiers', /`formatName`/);
+  });
+
+  it('does not guess when the requested name is declared twice', () => {
+    assertRejected(validate(`${GOOD}\n\n${GOOD}`), 'parse');
+  });
+});
+
 describe('validateRewrite: unchanged', () => {
   it('reports identical code as unchanged', () => {
     assert.deepEqual(validate(CHUNK), { ok: true, changed: false });
@@ -162,7 +181,7 @@ describe('validateRewrite: rejects (1–3) bad replies', () => {
 
   it('code that parses alone but breaks the file', () => {
     // Fine on its own, but the file already declares LIMIT.
-    assertRejected(validate(`${GOOD}\nconst LIMIT = 5;`), 'parse', /file/);
+    assertRejected(validate('const LIMIT = 5;'), 'parse', /file/);
   });
 
   it('prose that cannot be separated from the code', () => {
@@ -171,12 +190,16 @@ describe('validateRewrite: rejects (1–3) bad replies', () => {
 });
 
 describe('validateRewrite: rejects (4) top-level changes', () => {
-  it('an added helper function', () => {
-    assertRejected(validate(`${GOOD}\n\nfunction formatUser(u) {\n  return u.name;\n}`), 'topLevel', /added formatUser/);
+  it('never applies an added helper function or import (they are dropped, not added to the file)', () => {
+    for (const reply of [`${GOOD}\n\nfunction formatUser(u) {\n  return u.name;\n}`, `import { clsx } from 'clsx';\n${GOOD}`]) {
+      const result = validate(reply);
+      assert.ok(result.ok && result.changed, result.ok ? '' : result.reason);
+      assert.ok(result.ok && result.changed && !/formatUser|clsx/.test(result.fileSource));
+    }
   });
 
-  it('an added import', () => {
-    assertRejected(validate(`import { clsx } from 'clsx';\n${GOOD}`), 'topLevel', /added clsx/);
+  it('a rewrite that replaces the declaration with a different one', () => {
+    assertRejected(validate('export function OtherCard() {\n  return null;\n}'), 'topLevel', /removed UserCard; added OtherCard/);
   });
 
   it('a dropped export', () => {

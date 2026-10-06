@@ -118,8 +118,24 @@ The guiding rule throughout: **a missed cleanup is fine; a broken file or a fals
 | Re-indenting rules skip code with multi-line strings or template literals | Re-indenting would change the string's contents. |
 | `const x: T = expr; return x;` is left alone | Folding would drop the annotation, which can change what the type checker infers. |
 
+## Built-in model (Phase 7)
+
+| Decision | Why |
+|---|---|
+| Default model: Qwen2.5-Coder 1.5B Instruct, Q4_K_M GGUF (1.1 GB, checksum verified) | Small enough for ordinary laptops without a GPU, and a code model. The 3B version is 2.1 GB. Verified on an Apple-silicon Mac: download 107s, load 3s (Metal), ~5s per chunk; 8 of 8 suggestions on three fixtures accepted. |
+| `node-llama-cpp` is an **optional** dependency, loaded lazily | Its postinstall builds llama.cpp from source when no prebuilt binary fits, and exits with an error if that fails. As a required dependency that would make `npm install de-crapify` fail on such machines; as an optional one, npm skips it and de-crapify runs without AI. |
+| Always `build: "never"`, `skipDownload: true`; plus `config.nodeLlamaCppPostinstall: "ignoreFailedBuild"` in our package.json | We never compile or clone anything on the user's machine. The config setting only takes effect in some install layouts, so it's a second line of defence, not the main one. |
+| Known: `npm audit` reports a critical advisory in `simple-git` (via `node-llama-cpp` 3.22.1) | `simple-git` is only used by `node-llama-cpp` to clone llama.cpp for source builds, which we disable, so the vulnerable code never runs in de-crapify. The fix is in `simple-git` 4.x, which `node-llama-cpp` doesn't allow yet; users' `npm audit` will show it until upstream updates. Re-check when upgrading. |
+| Install size: ~55 MB on macOS; on Linux x64, npm also installs the CUDA and Vulkan binary variants (~190 MB for CUDA alone) | That's how `node-llama-cpp` publishes its platform binaries; npm can't tell which GPU a machine has at install time. |
+| Our own downloader (native `fetch`), not `node-llama-cpp`'s | Resume via `Range`, disk-space check, size and SHA-256 verification before the file is moved into place, a marker so the 1 GB file isn't re-hashed every run, and an injectable `fetch` so tests never download anything. |
+| Provider `auto`: Ollama if running with the model, else the built-in model; anything that prevents AI becomes one yellow line and the run continues | "Works right after `npm install`." An explicit `--ai-provider`, `--model` or `--ollama-url` means the user asked for something specific, so failures there stay setup errors (exit 2). |
+| The download is asked for once in a terminal (Enter = yes); never asked in CI, `--check`, or without a TTY; `--yes` allows it without asking | A 1.1 GB download should never surprise anyone, and CI must never hang on a question. |
+| When a reply echoes imports or neighbouring declarations, only the requested declaration is kept | Seen with the real 1.5B model: it repeated the prompt's imports (and silently changed an interface). Previously that was rejected as unparseable; now the extras are simply never applied, and the declaration is still fully validated. The prompt also asks the model not to do this. |
+| `--model` and `--ollama-url` no longer have commander defaults (defaults are applied later) | So we can tell whether the user actually asked for Ollama. |
+
 ## Open items
 
 - **Size limits** for AI rewrites: re-tune after trying a real model.
-- **Real-model trial:** everything in the AI stage is tested with a mocked Ollama; prompt wording and limits should be tuned against `qwen2.5-coder:7b` (or whichever model you use).
+- **Real-model trial:** the built-in model has been tried on the fixtures (all suggestions accepted after the echo fix). Try it on a real codebase with `--verbose` and tune the prompt and size limits from what gets rejected.
+- **`simple-git` advisory:** re-check on each `node-llama-cpp` upgrade.
 - **Narrating comments left above removed console calls** (`// Log the current state`): left for the AI stage, which may remove narrating comments.

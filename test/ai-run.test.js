@@ -26,7 +26,9 @@ async function fixture(name) {
 async function runWithAi(root, { reply = removeNarratingComments, models, raw = {}, deps = {} } = {}) {
   const mock = mockOllamaFetch({ reply, models });
   const capture = captureIO(root);
-  const code = await runClean(normalizeOptions('.', raw), capture.io, { fetch: mock.fetch, ...deps });
+  // Never load the real model library here; built-in provider tests live in test/ai-providers.test.js.
+  const ai = { loadLibrary: async () => { throw new Error('not in this test'); }, ...deps.ai };
+  const code = await runClean(normalizeOptions('.', raw), capture.io, { fetch: mock.fetch, ...deps, ai });
   return { code, out: capture.stdout(), err: capture.stderr(), calls: mock.calls };
 }
 
@@ -41,9 +43,12 @@ describe('AI run: preflight', () => {
     assert.match(r.stderr, /--no-ai/);
   });
 
-  it('stops before processing any file when the model is missing', async () => {
+  it('with --ai-provider ollama, stops before processing any file when the model is missing', async () => {
     const root = await fixture('react-classic');
-    await assert.rejects(runWithAi(root, { models: ['llama3:8b'] }), (e) => e instanceof SetupError && /ollama pull qwen2\.5-coder:7b/.test(e.hint ?? ''));
+    await assert.rejects(
+      runWithAi(root, { models: ['llama3:8b'], raw: { aiProvider: 'ollama' } }),
+      (e) => e instanceof SetupError && /ollama pull qwen2\.5-coder:7b/.test(e.hint ?? ''),
+    );
   });
 
   it('uses --model, --ollama-url and --num-ctx', async () => {
@@ -72,7 +77,7 @@ describe('AI run: results', () => {
     assert.match(out, /• AI: removed \d+ comments in `validateSignup`/);
     assert.match(out, /• removed unused import `useEffect` from 'react'/, 'deterministic reasons are still there');
     assert.match(out, /AI fixes accepted\s+[1-9]/);
-    assert.match(out, /AI\s+qwen2\.5-coder:7b \(\d+ chunk\(s\) sent\)/);
+    assert.match(out, /AI\s+Ollama qwen2\.5-coder:7b \(\d+ chunk\(s\) sent\)/);
     assert.doesNotMatch(out, /^\+.*\/\/ State for the email field/m);
   });
 

@@ -10,7 +10,7 @@ import {
   strippedLength,
   topLevelNames,
 } from './analysis.js';
-import { extractCode } from './fences.js';
+import { extractCode, isolateDeclaration } from './fences.js';
 
 /** Size check bounds, on code with comments and whitespace stripped. Easy to tune. */
 export const SIZE_LIMITS = Object.freeze({
@@ -72,14 +72,18 @@ export function validateRewrite({ fileSource, chunk, reply, doneReason, parserOp
   // 3. Parses alone, and in the file.
   const origAst = parseOrNull(original, parserOptions);
   if (!origAst) return reject('parse', 'the original chunk does not parse on its own');
-  const newAst = parseOrNull(code, parserOptions);
+  // Small models often echo the imports or neighbouring declarations shown in the prompt. Keep only
+  // the declaration we asked about; the echoed extras are never applied.
+  const sigName = origAst.program.body.length === 1 ? chunkSignature(origAst)?.name : undefined;
+  const isolated = sigName ? isolateDeclaration(code, parserOptions, sigName) : code;
+  const newAst = parseOrNull(isolated, parserOptions);
   if (!newAst) return reject('parse', 'the rewrite does not parse on its own');
 
   if (canonical(newAst.program) === canonical(origAst.program) && sameComments(origAst, newAst)) {
     return { ok: true, changed: false };
   }
 
-  const newFile = fileSource.slice(0, chunk.start) + code + fileSource.slice(chunk.end);
+  const newFile = fileSource.slice(0, chunk.start) + isolated + fileSource.slice(chunk.end);
   const origFileAst = parseOrNull(fileSource, parserOptions);
   const newFileAst = parseOrNull(newFile, parserOptions);
   if (!newFileAst) return reject('parse', 'the file does not parse with the rewrite in place');
@@ -87,7 +91,7 @@ export function validateRewrite({ fileSource, chunk, reply, doneReason, parserOp
   // 10. Kept statements byte-identical.
   for (const range of findKeepRanges(origAst, original)) {
     const kept = original.slice(range.start, range.end);
-    if (!code.includes(kept)) return reject('keep', `a de-crapify-keep statement was changed: ${firstLine(kept)}`);
+    if (!isolated.includes(kept)) return reject('keep', `a de-crapify-keep statement was changed: ${firstLine(kept)}`);
   }
 
   // 4. Top-level names and exports of the whole file.
@@ -136,7 +140,7 @@ export function validateRewrite({ fileSource, chunk, reply, doneReason, parserOp
   }
 
   // 8. Directive comments kept and still attached to the same code.
-  const directivesAfter = directiveComments(code, newAst);
+  const directivesAfter = directiveComments(isolated, newAst);
   for (const directive of directiveComments(original, origAst)) {
     const index = directivesAfter.indexOf(directive);
     if (index === -1) return reject('directives', `missing or moved: ${directive.split(' → ')[0]}`);
@@ -151,14 +155,14 @@ export function validateRewrite({ fileSource, chunk, reply, doneReason, parserOp
 
   // 11. Size, ignoring comments and whitespace.
   const sizeBefore = strippedLength(original, origAst);
-  const sizeAfter = strippedLength(code, newAst);
+  const sizeAfter = strippedLength(isolated, newAst);
   if (sizeBefore > 0) {
     const ratio = sizeAfter / sizeBefore;
     if (ratio > SIZE_LIMITS.MAX_RATIO) return reject('size', `the rewrite is longer than the original (${Math.round(ratio * 100)}%)`);
     if (ratio < SIZE_LIMITS.MIN_RATIO) return reject('size', `the rewrite is ${Math.round((1 - ratio) * 100)}% shorter than the original`);
   }
 
-  return { ok: true, changed: true, code, fileSource: newFile };
+  return { ok: true, changed: true, code: isolated, fileSource: newFile };
 }
 
 /** @param {string} code @param {import('@babel/parser').ParserOptions} parserOptions */

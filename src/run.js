@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { aiCleanupFile } from './ai/cleanup.js';
-import { createOllamaClient } from './ai/ollama.js';
+import { selectAiProvider } from './ai/providers.js';
 import { createProjectContext, describeContext } from './context/index.js';
 import { contentSkipReason, discoverFiles, SKIP_REASONS } from './discover.js';
 import { EXIT } from './errors.js';
@@ -19,6 +19,9 @@ import { loadProjectTypeScript, typecheckChanges } from './typecheck.js';
  * @property {(text: string) => void} err   Warnings and verbose logs.
  * @property {import('chalk').ChalkInstance} chalk
  * @property {string} cwd
+ * @property {boolean} [interactive]  A person is at a terminal (we may ask questions).
+ * @property {(question: string) => Promise<string>} [ask]
+ * @property {(text: string | null) => void} [statusLine]  A live, overwritten line on stderr (null ends it).
  */
 
 /**
@@ -35,7 +38,8 @@ import { loadProjectTypeScript, typecheckChanges } from './typecheck.js';
 /**
  * @typedef {object} RunDeps  Injectable for tests.
  * @property {(fromDir: string) => any} [loadTypeScript]
- * @property {typeof globalThis.fetch} [fetch]   Used for Ollama.
+ * @property {typeof globalThis.fetch} [fetch]   Used for Ollama and the model download.
+ * @property {import('./ai/providers.js').ProviderDeps} [ai]
  */
 
 /**
@@ -59,20 +63,35 @@ export async function runClean(options, io, deps = {}) {
   }
 
   const stats = createStats();
-  stats.aiStatus = 'off (--no-ai)';
 
   const discovery = await discoverFiles(path.resolve(io.cwd, options.targetPath), { maxFileSizeBytes: options.maxFileSizeBytes });
   stats.skipped.push(...discovery.skipped);
   verbose(`Found ${discovery.files.length} candidate file(s) under ${displayPath(discovery.root, io.cwd)}`);
   if (discovery.gitRoot) verbose(`Git root: ${discovery.gitRoot}`);
 
-  /** @type {import('./ai/ollama.js').OllamaClient | null} */
-  let client = null;
-  if (options.ai) {
-    client = createOllamaClient({ baseUrl: options.ollamaUrl, model: options.model, numCtx: options.numCtx, fetch: deps.fetch });
-    await client.preflight(); // throws SetupError (exit 2) if Ollama or the model isn't there
-    verbose(`Ollama: ${options.ollamaUrl}, model ${options.model}, num_ctx ${options.numCtx}`);
+  const ai = await selectAiProvider({ options, io, verbose, deps: { fetch: deps.fetch, ...deps.ai } });
+  try {
+    return await cleanFiles({ options, io, deps, stats, discovery, verbose, client: ai.client, aiStatus: ai.status });
+  } finally {
+    await ai.dispose();
   }
+}
+
+/**
+ * Everything after setup: per-file processing, typecheck, output, exit code.
+ * @param {object} env
+ * @param {import('./options.js').Options} env.options
+ * @param {RunIO} env.io
+ * @param {RunDeps} env.deps
+ * @param {import('./output/summary.js').Stats} env.stats
+ * @param {import('./discover.js').Discovery} env.discovery
+ * @param {(msg: string) => void} env.verbose
+ * @param {import('./ai/providers.js').AiClient | null} env.client
+ * @param {string} env.aiStatus
+ */
+async function cleanFiles({ options, io, deps, stats, discovery, verbose, client, aiStatus }) {
+  const { chalk } = io;
+  stats.aiStatus = aiStatus;
   const aiTotals = { chunks: 0, failures: 0 };
 
   const context = createProjectContext({ stopDir: discovery.gitRoot });
@@ -94,7 +113,7 @@ export async function runClean(options, io, deps = {}) {
 
   if (client) {
     const failed = aiTotals.failures ? `, ${aiTotals.failures} request(s) failed or timed out` : '';
-    stats.aiStatus = `${options.model} (${aiTotals.chunks} chunk(s) sent${failed})`;
+    stats.aiStatus = `${aiStatus} (${aiTotals.chunks} chunk(s) sent${failed})`;
   }
 
   typecheck(results, { options, io, stats, verbose, loadTypeScript: deps.loadTypeScript });
@@ -134,7 +153,7 @@ export async function runClean(options, io, deps = {}) {
  * @param {import('./context/index.js').DirContext} deps.ctx
  * @param {import('./context/files.js').FileCache} deps.files
  * @param {import('./options.js').Options} deps.options
- * @param {import('./ai/ollama.js').OllamaClient | null} deps.client
+ * @param {import('./ai/providers.js').AiClient | null} deps.client
  * @param {{ chunks: number, failures: number }} deps.aiTotals
  * @param {RunIO} deps.io
  * @returns {Promise<FileResult | null>}
