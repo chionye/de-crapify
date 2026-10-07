@@ -150,4 +150,3 @@ Not supported: Vue, Svelte and Astro files, and Flow.
 ## License
 
 ISC
-# de-crapify

@@ -2,18 +2,29 @@
   "name": "de-crapify",
   "version": "0.1.0",
   "description": "Clean up the messy patterns AI coding assistants leave in JS/TS code, locally and safely.",
+  "homepage": "https://github.com/chionye/de-crapify#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chionye/de-crapify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chionye/de-crapify/issues"
+  },
   "type": "module",
   "bin": {
-    "de-crapify": "./src/index.js"
+    "de-crapify": "src/index.js"
   },
   "files": [
-    "src"
+    "src",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "cli",
@@ -23,9 +34,16 @@
     "lint",
     "javascript",
     "typescript",
-    "react"
+    "react",
+    "refactor",
+    "unused-imports",
+    "console-log",
+    "codemod",
+    "llm",
+    "local-ai",
+    "react-native"
   ],
-  "author": "",
+  "author": "michael valentine",
   "license": "ISC",
   "dependencies": {
     "@babel/parser": "^7.29.9",
